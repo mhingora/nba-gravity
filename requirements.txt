@@ -19,6 +19,9 @@ ultralytics          # or rfdetr — whichever detector you fine-tune
 # Testing / debugging viewer
 streamlit
 pillow
+# Click-to-place landmark annotation in the Court Calibration tab. Optional:
+# the tab falls back to typing coordinates if it is missing.
+streamlit-image-coordinates
 
 # Stage 3 — team colour clustering
 scikit-learn

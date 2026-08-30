@@ -68,6 +68,11 @@ from pipeline.court_geometry import (
     parse_keypoints,
     to_court_feet,
 )
+try:
+    from streamlit_image_coordinates import streamlit_image_coordinates
+except ImportError:  # optional: the tab falls back to typing coordinates
+    streamlit_image_coordinates = None
+
 from pipeline.possession import possession_summary
 from pipeline.track_quality import EXPECTED_PLAYERS, summarize
 
@@ -75,6 +80,12 @@ st.set_page_config(page_title="NBA Gravity — Pipeline Viewer", layout="wide")
 
 BALL_COLOR_BGR = (40, 140, 245)
 MAX_GIF_FRAMES = 400
+# Display width for the click-to-annotate frame. Purely a layout choice: the
+# component reports the rendered width and height alongside each click
+# (`sendValue({x: offsetX, y: offsetY, width: img.width, height: img.height})`),
+# so normalising uses those numbers rather than assuming this one survived
+# whatever CSS did to the element.
+CLICK_DISPLAY_WIDTH = 900
 
 
 # --------------------------------------------------------------------------
@@ -156,6 +167,29 @@ def draw_ball(frame: np.ndarray, ball_rows: pd.DataFrame) -> np.ndarray:
             cv2.FONT_HERSHEY_SIMPLEX, 0.4, BALL_COLOR_BGR, 1, cv2.LINE_AA,
         )
     return frame
+
+
+def _draw_coordinate_grid(frame: np.ndarray, step: float) -> None:
+    """Overlay labelled normalized gridlines, for reading landmark coordinates.
+
+    Annotation means naming the pixel a court landmark sits at, and without
+    a reference there is no way to tell 0.34 from 0.38 by eye. The labels are
+    the whole point of the grid.
+    """
+    height, width = frame.shape[:2]
+    ticks = int(round(1.0 / step))
+    for i in range(1, ticks):
+        value = i * step
+        x = int(width * value)
+        y = int(height * value)
+        cv2.line(frame, (x, 0), (x, height), (0, 210, 210), 1)
+        cv2.line(frame, (0, y), (width, y), (210, 0, 210), 1)
+        # Label every other line at fine spacings, or the text becomes a wall.
+        if step >= 0.05 or i % 2 == 0:
+            cv2.putText(frame, f"{value:.3f}".rstrip("0"), (x + 3, 18),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 210, 210), 1)
+            cv2.putText(frame, f"{value:.3f}".rstrip("0"), (3, y - 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (210, 0, 210), 1)
 
 
 def bgr_to_rgb(frame: np.ndarray) -> np.ndarray:
@@ -1014,12 +1048,60 @@ with tabs[4]:
             "least 4, and not collinear - spread them across the court rather "
             "than along one line. Known names: " + ", ".join(sorted(COURT_LANDMARKS))
         )
+        # A click is consumed here, before the text area widget exists:
+        # assigning to a widget's session_state key after instantiation
+        # raises, so the update has to happen on the following rerun.
+        click_landmark = None
+        if streamlit_image_coordinates is not None:
+            click_landmark = st.selectbox(
+                "Click on the frame to place this landmark",
+                sorted(COURT_LANDMARKS),
+                key="cal_click_target",
+                help="Pick the landmark, then click where it sits in the "
+                "frame below. Clicking again moves it.",
+            )
+            pending = st.session_state.get("cal_click")
+            last = st.session_state.get("cal_click_handled")
+            if pending and pending != last:
+                st.session_state["cal_click_handled"] = pending
+                # Normalise against the size the component actually rendered,
+                # which it returns with the click. Dividing by the width we
+                # asked for would silently skew every landmark if the browser
+                # scaled the image to fit its column.
+                shown_w = float(pending.get("width") or CLICK_DISPLAY_WIDTH)
+                shown_h = float(pending.get("height") or CLICK_DISPLAY_WIDTH)
+                nx = pending["x"] / shown_w if shown_w else 0.0
+                ny = pending["y"] / shown_h if shown_h else 0.0
+                target = st.session_state.get("cal_click_target")
+                existing = st.session_state.get("cal_text", "")
+                kept = [
+                    line
+                    for line in existing.splitlines()
+                    if line.strip() and line.split()[0] != target
+                ]
+                kept.append(f"{target} {nx:.4f} {ny:.4f}")
+                st.session_state["cal_text"] = "\n".join(kept)
+                st.rerun()
+
         if "cal_text" not in st.session_state:
             st.session_state["cal_text"] = "\n".join(
                 name + " " + format(pt[0], "g") + " " + format(pt[1], "g")
                 for name, pt in stored_kp.items()
             )
         cal_raw = st.text_area("Landmarks", key="cal_text", height=170)
+
+        grid_cols = st.columns([1, 2])
+        show_grid = grid_cols[0].checkbox(
+            "Show coordinate grid", value=True, key="cal_grid"
+        )
+        grid_step = grid_cols[1].select_slider(
+            "Grid spacing",
+            options=[0.10, 0.05, 0.025],
+            value=0.05,
+            key="cal_grid_step",
+            help="Read a landmark's x and y straight off the labelled lines, "
+            "then type them in above.",
+        )
 
         parsed_kp = {}
         parse_error = None
@@ -1039,23 +1121,43 @@ with tabs[4]:
 
         if parse_error:
             st.error(parse_error)
-        elif len(parsed_kp) < MIN_LANDMARKS:
-            st.info(
-                str(len(parsed_kp)) + " landmark(s) so far; " + str(MIN_LANDMARKS)
-                + " are needed for a homography."
-            )
-        elif cal_frame is None:
+
+        if cal_frame is None:
             st.error("Could not read that frame.")
         else:
             cal_h, cal_w = cal_frame.shape[:2]
-            try:
-                kp_image, kp_court, kp_names = parse_keypoints(parsed_kp)
-                homography, per_point, rms = compute_homography(
-                    kp_image, kp_court, cal_w, cal_h
+
+            # The frame is drawn whatever the landmark count. Gating it behind
+            # "4 landmarks" made click-to-place unusable: you could not click
+            # your way to the fourth point without an image to click on.
+            canvas = cal_frame.copy()
+            if show_grid:
+                _draw_coordinate_grid(canvas, grid_step)
+            for name, point in parsed_kp.items():
+                px = int(point[0] * cal_w)
+                py = int(point[1] * cal_h)
+                cv2.drawMarker(
+                    canvas, (px, py), (0, 255, 255), cv2.MARKER_CROSS, 26, 2
                 )
-            except ValueError as exc:
-                st.error(str(exc))
-            else:
+                cv2.putText(
+                    canvas, name, (px + 8, py - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1,
+                )
+
+            homography = None
+            per_point = None
+            kp_names: list[str] = []
+            kp_image = None
+            if not parse_error and len(parsed_kp) >= MIN_LANDMARKS:
+                try:
+                    kp_image, kp_court, kp_names = parse_keypoints(parsed_kp)
+                    homography, per_point, rms = compute_homography(
+                        kp_image, kp_court, cal_w, cal_h
+                    )
+                except ValueError as exc:
+                    st.error(str(exc))
+
+            if homography is not None:
                 mcols = st.columns(3)
                 mcols[0].metric("Landmarks", len(kp_names))
                 mcols[1].metric(
@@ -1065,34 +1167,55 @@ with tabs[4]:
                     "homography puts them. This is the single number that says "
                     "whether to trust this angle at all.",
                 )
-                mcols[2].metric("Worst landmark", format(per_point.max(), ".1f") + " px")
-
+                mcols[2].metric(
+                    "Worst landmark", format(per_point.max(), ".1f") + " px"
+                )
                 if rms > 20:
                     st.warning(
                         "High reprojection error - at least one landmark is "
                         "probably misplaced. The worst offender is in the table "
                         "below."
                     )
+            else:
+                st.info(
+                    str(len(parsed_kp)) + " landmark(s) placed; "
+                    + str(MIN_LANDMARKS)
+                    + " are needed for a homography. Pick a landmark above and "
+                    "click it in the frame."
+                )
 
-                left_col, right_col = st.columns(2)
+            left_col, right_col = st.columns(2)
 
-                with left_col:
-                    st.markdown("**Annotated frame**")
-                    canvas = cal_frame.copy()
-                    for name, point in parsed_kp.items():
-                        px = int(point[0] * cal_w)
-                        py = int(point[1] * cal_h)
-                        cv2.drawMarker(
-                            canvas, (px, py), (0, 255, 255), cv2.MARKER_CROSS, 26, 2
-                        )
-                        cv2.putText(
-                            canvas, name, (px + 8, py - 8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1,
-                        )
+            with left_col:
+                st.markdown("**Annotated frame**")
+                if streamlit_image_coordinates is None:
                     st.image(bgr_to_rgb(canvas), width="stretch")
+                    st.caption(
+                        "Install `streamlit-image-coordinates` to place "
+                        "landmarks by clicking instead of typing."
+                    )
+                else:
+                    streamlit_image_coordinates(
+                        bgr_to_rgb(canvas),
+                        width=CLICK_DISPLAY_WIDTH,
+                        key="cal_click",
+                    )
+                    st.caption(
+                        "Click to place the landmark selected above. The cross "
+                        "should land exactly where you clicked - if it does "
+                        "not, the coordinates are in the text box and can be "
+                        "nudged by hand."
+                    )
 
-                with right_col:
-                    st.markdown("**Radar - players projected onto the court**")
+            with right_col:
+                st.markdown("**Radar - players projected onto the court**")
+                if homography is None:
+                    st.caption(
+                        "Appears once a homography can be computed. This is "
+                        "the check that matters: the dots must land inside the "
+                        "court, where the players actually are."
+                    )
+                else:
                     radar = np.full((490, 280, 3), 245, dtype=np.uint8)
 
                     def court_to_radar(pt):
@@ -1139,15 +1262,17 @@ with tabs[4]:
                                 if not np.isfinite(point).all():
                                     continue
                                 cv2.circle(
-                                    radar, court_to_radar(point), 5, (200, 60, 60), -1
+                                    radar, court_to_radar(point), 5,
+                                    (200, 60, 60), -1,
                                 )
                     st.image(bgr_to_rgb(radar), width="stretch")
                     st.caption(
-                        "Dots should sit inside the court and match where players "
-                        "stand in the frame. Dots outside the rectangle mean the "
-                        "homography is wrong."
+                        "Dots should sit inside the court and match where "
+                        "players stand in the frame. Dots outside the rectangle "
+                        "mean the homography is wrong."
                     )
 
+            if homography is not None:
                 st.markdown("**Known distance checks**")
                 checks = known_distance_checks(
                     homography, kp_image, kp_names, cal_w, cal_h
@@ -1157,15 +1282,16 @@ with tabs[4]:
                         pd.DataFrame(checks), width="stretch", hide_index=True
                     )
                     st.caption(
-                        "The milestone's done-when: real court distances projected "
-                        "through the homography should come out near their true "
-                        "values. These landmarks were used to fit it, so this "
-                        "checks internal consistency, not independent accuracy."
+                        "The milestone's done-when: real court distances "
+                        "projected through the homography should come out near "
+                        "their true values. These landmarks were used to fit "
+                        "it, so this checks internal consistency, not "
+                        "independent accuracy."
                     )
                 else:
                     st.caption(
-                        "No checkable pairs among these landmarks - add both lane "
-                        "baseline corners, or both free-throw corners."
+                        "No checkable pairs among these landmarks - add both "
+                        "lane baseline corners, or both free-throw corners."
                     )
 
                 st.dataframe(

@@ -105,6 +105,24 @@ clearly the home whites and the other clearly the away darks, the stage works.
   players. If it is swallowing players, raise `--ambiguity-ratio`.
 - Lopsided groups (say 18 vs 4) mean one kit is being split.
 
+### Tab 5 — Court Calibration
+
+**Question: does the homography put players where they actually are?**
+
+Pick a landmark from the dropdown and click it in the frame; the coordinates
+are written into the text box, where they can also be nudged by hand. A
+labelled coordinate grid is available if you would rather read positions off
+and type them.
+
+- **Reprojection error** under ~15px is good. Above 20 the tab warns you, and
+  the per-landmark table names the worst offender.
+- The **radar** is the check that matters. Dots must land inside the court
+  rectangle, in the same arrangement as the players in the frame. A tidy
+  reprojection error with dots strewn outside means the landmarks are
+  internally consistent but wrong — usually two of them swapped.
+- Spread landmarks out. Four points along the baseline are collinear and are
+  refused outright rather than fitted to nonsense.
+
 ### Tab 4 — Ball Possession
 
 **Question: is the highlighted player the one actually holding the ball?**
