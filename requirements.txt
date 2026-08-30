@@ -1,0 +1,25 @@
+# Core pipeline
+# supervision supplies Detections, annotators and the view transformer.
+# Tracking comes from `trackers` instead: sv.ByteTrack was removed in 0.30,
+# so nothing here holds supervision back any more.
+supervision>=0.26
+# `trackers` supplies ByteTrack/OC-SORT/BoT-SORT and is the default backend.
+trackers>=2.6
+numpy
+pandas
+pyarrow              # parquet stage outputs
+
+# Headless OpenCV — the viewer renders in the browser, so no native windows
+# are needed. Swap to opencv-python if you want cv2.imshow while debugging.
+opencv-python-headless
+
+# Detection (Stage 1). Not needed for shot segmentation or the viewer.
+ultralytics          # or rfdetr — whichever detector you fine-tune
+
+# Testing / debugging viewer
+streamlit
+pillow
+
+# Later stages — uncomment when their milestone starts
+# easyocr            # jersey number OCR (Stage 3)
+# scikit-learn       # team colour clustering (Stage 3)

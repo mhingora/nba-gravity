@@ -1,0 +1,19 @@
+# Licensed broadcast footage — never commit (see docs/07-known-challenges.md)
+data/raw_video/
+
+# Regenerable pipeline caches
+outputs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+
+# Model weights — downloadable artifacts, and yolov8x.pt (130MB) exceeds
+# GitHub's 100MB file limit. See README for how to fetch them.
+*.pt
+models/
+
+# Local launcher — pins an absolute interpreter path for this machine
+.claude/
