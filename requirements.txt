@@ -20,6 +20,8 @@ ultralytics          # or rfdetr — whichever detector you fine-tune
 streamlit
 pillow
 
+# Stage 3 — team colour clustering
+scikit-learn
+
 # Later stages — uncomment when their milestone starts
-# easyocr            # jersey number OCR (Stage 3)
-# scikit-learn       # team colour clustering (Stage 3)
+# easyocr            # jersey number OCR (Stage 6)

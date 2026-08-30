@@ -16,7 +16,9 @@ pipeline/track_quality.py       tracking-quality metrics (CLI + viewer share the
 pipeline/tracker_backends.py    pluggable tracking backends + frame streaming
 pipeline/01_detect.py           Stage 0 + 1 CLI
 pipeline/02_track.py            Stage 2 CLI
-pipeline/03_..06_*.py           stubs — docstrings and NotImplementedError
+pipeline/team_clustering.py     Stage 3 Part A — kit-colour clustering
+pipeline/03_identify.py         Stage 3 CLI (Part A done, Part B stub)
+pipeline/04_..06_*.py           stubs — docstrings and NotImplementedError
 tools/make_test_clip.py         synthetic clip with known ground truth
 data/calibration/*.json         court profiles, one per camera angle
 ```
@@ -122,10 +124,41 @@ with the `BALL_TRACKER_ID = -1` sentinel (the `trackers` backends emit
 unconfirmed detections as -1, which `sv.ByteTrack` never did), and a track
 reported as spanning 107% of its shot, which is what surfaced the collision.
 
+### Stage 3 deviations
+
+**Clustered once per game, not per shot.** `04-identity-resolution.md`
+describes clustering each shot then anchoring the clusters to a per-game
+reference. Features from every track are clustered together instead, so each
+track takes its label from the nearest global centroid and cross-shot
+consistency is automatic rather than a second matching step that can fail. One
+game is one arena under one lighting rig; if that ever stops holding, the
+spec's per-shot-plus-anchor scheme is the fallback.
+
+**Teams are named `light` / `dark`, not `team_a` / `team_b`.** Assigned by
+cluster brightness, so the label is stable across runs — an arbitrary label
+flips whenever k-means seeds differently — and readable when spot-checking.
+
+**`other` is decided by ambiguity, not distance rank.** The first version
+evicted a fixed top percentile of centroid distances, which is not a
+confidence test: it relabels the same fraction whatever the input. Spot-
+checking the crop grid caught it discarding an unmistakable Spurs jersey. A
+track is now `other` only when its distance to the rival centroid is barely
+worse than to its own, so clean input can legitimately produce no outliers.
+
+**`identity_confidence` carries only the team term.** The spec's formula is
+`frame_agreement * clipped_silhouette`; with OCR unimplemented there is no
+frame-agreement term, so the value is the clipped silhouette scaled by how
+many frames yielded a usable crop, and describes confidence in the team label
+alone.
+
 ## Known gaps
 
 - Real footage has been processed, but only one possession (465 frames of
   7,786). Nothing has run at scale.
+- Stage 3 misassigns roughly 2 tracks in 25. Both observed failures were
+  crops contaminated by background or an overlapping player rather than kit
+  colour. The embedding-based feature in `04-identity-resolution.md` (SigLIP
+  or similar) is the documented upgrade if colour histograms plateau.
 - Milestone 1 is blocked on appearance-based re-identification; every
   available tracker associates on geometry alone and plateaus at 6 of 10.
 - Ball recall was poor with COCO's `sports ball` class (64% of frames); a

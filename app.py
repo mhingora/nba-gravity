@@ -37,9 +37,16 @@ from pipeline.common import (
     list_games,
     load_shots,
     read_frame,
+    identity_path,
     shot_diffs_path,
     tracks_path,
     video_info,
+)
+from pipeline.team_clustering import (
+    TEAM_DARK,
+    TEAM_LIGHT,
+    TEAM_OTHER,
+    crop_torso,
 )
 from pipeline.court_region import (
     DEFAULT_BROADCAST_POLYGON,
@@ -759,7 +766,95 @@ with tabs[1]:
 # --------------------------------------------------------------------------
 
 with tabs[2]:
-    milestone_placeholder("Team Classification", "Milestone 3", "03_identify.py")
+    st.subheader("Team Classification")
+    st.caption(
+        "Do the two clusters obviously correspond to the two teams' kit "
+        "colours? This is a five-second visual check, not a chart."
+    )
+
+    ident_path = identity_path(game_id)
+    if not ident_path.exists():
+        st.info(
+            f"No identity output yet. Run:\n\n"
+            f"`python pipeline/03_identify.py --game-id {game_id}`"
+        )
+    elif not trk_path.exists():
+        st.warning("Tracks are missing, so crops cannot be located.")
+    else:
+        identity = load_parquet(str(ident_path), _mtime(ident_path))
+        tracks_for_crops = load_parquet(str(trk_path), _mtime(trk_path))
+        tracks_for_crops = tracks_for_crops[
+            tracks_for_crops["class"] == CLASS_PLAYER
+        ]
+
+        counts = identity["team_id"].value_counts()
+        stat_cols = st.columns(4)
+        stat_cols[0].metric("Tracks clustered", len(identity))
+        stat_cols[1].metric(TEAM_LIGHT, int(counts.get(TEAM_LIGHT, 0)))
+        stat_cols[2].metric(TEAM_DARK, int(counts.get(TEAM_DARK, 0)))
+        stat_cols[3].metric(
+            TEAM_OTHER,
+            int(counts.get(TEAM_OTHER, 0)),
+            help="Colour evidence favoured neither team — referees, coaches, "
+            "crowd. Confirm these are genuinely not players.",
+        )
+
+        light_n = int(counts.get(TEAM_LIGHT, 0))
+        dark_n = int(counts.get(TEAM_DARK, 0))
+        if light_n and dark_n and max(light_n, dark_n) > 3 * min(light_n, dark_n):
+            st.warning(
+                f"Clusters are lopsided ({light_n} vs {dark_n}). Both teams "
+                "have five players on court, so a large imbalance usually "
+                "means one kit is being split or the crops are contaminated."
+            )
+
+        st.markdown("**Torso crops, grouped by assigned team**")
+        for team in (TEAM_LIGHT, TEAM_DARK, TEAM_OTHER):
+            members = identity[identity["team_id"] == team]
+            if members.empty:
+                continue
+            st.caption(f"{team} — {len(members)} track(s)")
+            columns = st.columns(8)
+            for slot, (_, row) in enumerate(members.iterrows()):
+                track_rows = tracks_for_crops[
+                    (tracks_for_crops["shot_id"] == row["shot_id"])
+                    & (tracks_for_crops["tracker_id"] == row["tracker_id"])
+                ].sort_values("frame_idx")
+                if track_rows.empty:
+                    continue
+                # Mid-track frame: the start and end of a track are where it is
+                # most likely to be entering or leaving an occlusion.
+                middle = track_rows.iloc[len(track_rows) // 2]
+                frame = get_frame(str(video_path), int(middle["frame_idx"]))
+                if frame is None:
+                    continue
+                crop = crop_torso(
+                    frame,
+                    (middle["x1"], middle["y1"], middle["x2"], middle["y2"]),
+                )
+                if crop is None:
+                    continue
+                with columns[slot % 8]:
+                    st.image(bgr_to_rgb(crop), width="stretch")
+                    st.caption(
+                        f"#{int(row['tracker_id'])} · "
+                        f"{row['identity_confidence']:.2f}"
+                    )
+
+        st.caption(
+            "Caption is tracker_id and identity_confidence. A crop that "
+            "obviously belongs to the other group is a clustering error — the "
+            "usual cause is a crop contaminated by background or an "
+            "overlapping player rather than the kit colour itself."
+        )
+
+        with st.expander("Identity table"):
+            st.dataframe(identity, width="stretch", hide_index=True)
+            st.caption(
+                "`jersey_number` and `player_name` stay null until Milestone 6 "
+                "(OCR). That is expected: only the final per-player "
+                "aggregation needs a name."
+            )
 with tabs[3]:
     milestone_placeholder("Ball Possession", "Milestone 4", "04_ball_possession.py")
 with tabs[4]:

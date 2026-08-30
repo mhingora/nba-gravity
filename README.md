@@ -13,6 +13,58 @@ The gap between those two numbers is a proxy for "gravity": stars who pull
 defenders even off the ball, or who force heavy attention on catch, should show
 a bigger delta than role players.
 
+## Results so far
+
+Measured on one 15-second half-court possession from a 1080p broadcast, using
+the scorecard that `pipeline/track_quality.py` prints after every run.
+
+**A basketball-trained detector beat a generic one 20x its size.** Swapping
+COCO `yolov8x` (68M params) for a basketball-trained `yolov8n` (3.15M):
+
+| | COCO yolov8x | basketball yolov8n |
+|---|---|---|
+| Player detections per frame | 92 | **14** |
+| Median confidence | 0.19 | **0.83** |
+| Frames with the ball detected | 64% | **86%** |
+
+92 boxes per frame was the detector finding the entire arena. 10 players were
+on court.
+
+**Source resolution mattered more than any parameter.** The same possession,
+same settings, at 848x480 versus 1920x1080:
+
+| | 480p | 1080p |
+|---|---|---|
+| Frames with 10+ players tracked | 18% | **99%** |
+| Longest unbroken track | 79% of shot | **99%** |
+
+**Motion-based tracking has a ceiling here, and it is not a tuning problem.**
+Four trackers — supervision ByteTrack, and ByteTrack / OC-SORT / BoT-SORT from
+the `trackers` package — each swept over buffer and association thresholds,
+all plateau at **6 of 10** players holding a single id for a full possession.
+Every one of them associates on motion and geometry alone. Two players who
+swap positions mid-crossing are indistinguishable without appearance
+features, which is what closing the remaining gap requires.
+
+Counter-intuitively, the court-polygon crowd filter built for the COCO
+detector *hurts* with a basketball detector: it was compensating for crowd
+detections that no longer happen, and it clips real players instead. Kept for
+generic weights, skipped otherwise.
+
+## Status
+
+**No milestone is closed yet.** Stages 0-3 run on real broadcast footage —
+shot segmentation, detection, tracking, and team classification. Stages 4-6
+are stubs, so there is no gravity number yet and the research question above
+is unanswered.
+
+Detection and tracking have run on **one hand-picked possession** — 465 of
+7,786 frames, about 6% of a single clip. Shot segmentation has run over full
+clips. Nothing has run at scale.
+
+See `docs/06-roadmap.md` for per-milestone state and `docs/09-implementation-notes.md`
+for what was built and why.
+
 ## Repo structure
 
 ```
@@ -157,6 +209,19 @@ Then inspect the results in the viewer:
 streamlit run app.py
 ```
 
+Sort the tracked players into teams (Milestone 3) — gravity is measured
+against defenders, so this has to happen before any distance means anything:
+
+```bash
+python pipeline/03_identify.py --game-id 0022500123
+```
+
+Clusters are named `light` / `dark` by kit brightness rather than an arbitrary
+`team_a` / `team_b`, so labels stay stable across runs. Tracks whose colour
+favours neither team become `other` — referees, coaches, anyone the detector
+picked up. Check the result in the viewer's Team Classification tab: the two
+crop groups should obviously be the two kits.
+
 No footage yet? Generate a synthetic clip with known ground truth (3 camera
 cuts, 10 players, 1 ball) and run the whole path against it:
 
@@ -180,53 +245,3 @@ their own terms.
 
 See `requirements.txt`. `ultralytics` is only needed for Stage 1 detection —
 shot segmentation, tracking, and the viewer run without it.
-
-## Status
-
-Stages 0-2 (shot segmentation, detection, tracking) are implemented, along with
-Tabs 1-2 of the viewer. Stages 3-6 are stubs; their viewer tabs render milestone
-placeholders.
-
-Verified against the synthetic clip: shot boundaries land exactly on the known
-cuts, and all 10 players hold a stable `tracker_id` for the full length of every
-shot. **That validates the plumbing only.**
-
-First real-footage runs on a 4th-quarter broadcast clip, one ~15-second
-half-court possession:
-
-| | 480p, COCO yolov8x | 1080p, COCO + polygon | 1080p, basketball detector |
-|---|---|---|---|
-| Median tracked per frame | 8 | 10 | 10 |
-| Frames with 10+ | 18% | 69% | 79% |
-| Longest track (% of shot) | 79% | 96% | 99% |
-| Distinct tracks (10 expected) | 47 | 37 | 31 |
-| Tracks spanning >90% of shot | 0 | 2 | 6 |
-
-Two changes drove nearly all of it. **Source resolution**: at 480p the
-detector simply missed players and no tracker tuning recovered them.
-**Detector training**: swapping COCO for a basketball-trained model cut
-detections per frame from 92 to 14 (the rest was crowd) and raised median
-confidence from 0.19 to 0.83.
-
-Note the court polygon is *counterproductive* with a basketball detector — it
-was fitted to compensate for COCO's crowd detections and clips real players
-otherwise. It remains correct for COCO weights.
-
-All four tracking backends were compared on the same possession; the best
-plateaued at 6 of 10 tracks spanning the shot.
-
-Milestone 1 is **still open**, and the remaining gap is now precisely
-characterised. Per-frame recall is solved; ids are not. 31 tracks for 10
-players, with the right number of boxes in each frame, means the same players
-keep getting new ids when they cross.
-
-Every backend here associates on motion and geometry alone. None uses
-appearance, so two players who genuinely swap positions mid-crossing cannot be
-told apart — the `trackers` package dropped `ReIDModel` in v2.1.0 and lists
-ReID as planned, not present. Closing the last 4 of 10 needs appearance
-features: either ReID returning upstream, or a small embedding model
-(torchvision/timm backbone, cosine similarity over player crops) wired into
-Stage 2.
-
-See `docs/09-implementation-notes.md` for build decisions, deviations from the
-original specs, and known gaps.

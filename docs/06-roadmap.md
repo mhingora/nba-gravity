@@ -9,7 +9,7 @@ building the whole pipeline blind before seeing any output.
 |-----------|-------|
 | 1 — Detection + tracking | **Open.** Runs on real 1080p broadcast footage; 6 of 10 players hold one id for a full possession. Blocked on appearance-based re-identification. |
 | 2 — Shot boundary segmentation | **Open.** Runs over full clips (47 and 32 shots). Never checked by eye against the video, which is its "done when". |
-| 3 — Team classification | Not started (`03_identify.py` is a stub). |
+| 3 — Team classification | **Implemented.** 23 of 25 tracks on the test possession land in the visually correct kit cluster; silhouette 0.36. Viewer Tab 3 renders the crop grid for spot-checking. |
 | 4 — Ball possession | Not started (`04_ball_possession.py` is a stub). Ball detection now lands on 86% of frames, up from 64% with COCO weights. |
 | 5 — Court calibration | Not started (`05_calibrate.py` is a stub). Needs a keypoint-annotation UI that does not exist yet. |
 | 6 — Jersey OCR / identity | Not started. Measured constraint: player boxes are ~218px tall at 1080p, leaving roughly 76px of torso for OCR. |
