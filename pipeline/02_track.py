@@ -426,6 +426,7 @@ def main() -> int:
     print(f"[stage 2] tracker '{backend}' {tracker_args}", file=sys.stderr)
 
     total_rows = 0
+    total_players = 0
     with ParquetBatchWriter(tracks_path(args.game_id), TRACK_OUTPUT_COLUMNS) as writer:
         for shot_id, shot_detections in detections.groupby("shot_id", sort=True):
             rows = track_shot(
@@ -443,6 +444,7 @@ def main() -> int:
                 [r for r in rows if r["class"] == CLASS_PLAYER],
                 columns=TRACK_OUTPUT_COLUMNS,
             )
+            total_players += len(players)
             if players.empty:
                 print(f"  shot {shot_id}: no player tracks", file=sys.stderr)
             else:
@@ -452,6 +454,19 @@ def main() -> int:
         f"[stage 2] {total_rows} row(s) -> {tracks_path(args.game_id).name}",
         file=sys.stderr,
     )
+
+    # A table with no player rows is not a usable result, and writing one
+    # silently is worse than failing: every later stage reads it, and the
+    # viewer cannot render it. Ball rows alone still count as empty, since
+    # they pass through untracked and would mask the failure.
+    if total_players == 0:
+        print(
+            "[error] no player tracks written — every detection was filtered "
+            "out. Check --min-confidence against the detector's confidences, "
+            "and any --court-polygon / --court-roi against the frame.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

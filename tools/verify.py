@@ -32,6 +32,8 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import pandas as pd
 
+import numpy as np
+
 from pipeline.common import (
     CLASS_BALL,
     CLASS_PLAYER,
@@ -40,6 +42,13 @@ from pipeline.common import (
     load_shots,
     possession_path,
     tracks_path,
+)
+from pipeline.court_geometry import (
+    COURT_LANDMARKS,
+    compute_homography,
+    known_distance_checks,
+    parse_keypoints,
+    to_court_feet,
 )
 
 SYNTHETIC_GAME = "TESTCLIP"
@@ -242,6 +251,97 @@ def ground_truth_checks(checker: Checker) -> None:
     )
 
 
+def homography_checks(checker: Checker) -> None:
+    """Check the Stage 5 maths against a homography we constructed ourselves.
+
+    Real footage has no ground truth for this — nobody knows the true camera
+    matrix — so accuracy there can only be judged by eye in the viewer. What
+    *can* be checked exactly is whether the solver recovers a transform that
+    is known by construction: place the court landmarks through an invented
+    perspective matrix, hand the resulting pixels back, and the fit should
+    reproduce it to floating-point precision.
+
+    That separates "the maths is wrong" from "the annotation is wrong", which
+    otherwise look identical: both give a large reprojection error.
+    """
+    frame_width, frame_height = 1920.0, 1080.0
+    names = [
+        "baseline_left_corner",
+        "baseline_right_corner",
+        "free_throw_left",
+        "free_throw_right",
+        "halfcourt_left",
+        "halfcourt_right",
+    ]
+    court = np.array([COURT_LANDMARKS[n] for n in names], dtype=np.float64)
+
+    invented = np.array(
+        [[6.0, 2.0, 300.0], [0.5, 3.5, 200.0], [0.0004, 0.0022, 1.0]]
+    )
+    homogeneous = np.column_stack([court, np.ones(len(court))]) @ invented.T
+    pixels = homogeneous[:, :2] / homogeneous[:, 2:3]
+
+    keypoints = {
+        name: (pixels[i, 0] / frame_width, pixels[i, 1] / frame_height)
+        for i, name in enumerate(names)
+    }
+    image_points, court_points, parsed_names = parse_keypoints(keypoints)
+    matrix, _, rms = compute_homography(
+        image_points, court_points, frame_width, frame_height
+    )
+
+    checker.check(
+        "homography recovers a known transform (rms < 0.01px)",
+        rms < 0.01,
+        f"rms {rms:.4f}px",
+    )
+    recovered = to_court_feet(matrix, pixels)
+    checker.check(
+        "projected landmarks land on their true court positions",
+        bool(np.abs(recovered - court).max() < 0.01),
+        f"max {np.abs(recovered - court).max():.4f}ft",
+    )
+    distances = known_distance_checks(
+        matrix, image_points, parsed_names, frame_width, frame_height
+    )
+    checker.check(
+        "known court distances measure correctly through the homography",
+        bool(distances) and all(abs(d["error_ft"]) < 0.05 for d in distances),
+        f"{[d['error_ft'] for d in distances]}",
+    )
+
+    # Degenerate input must be refused. A homography fitted to collinear
+    # points is not merely inaccurate, it is meaningless — and it would
+    # produce confident, wrong distances downstream.
+    collinear = {
+        "baseline_left_corner": (0.1, 0.5),
+        "baseline_right_corner": (0.2, 0.5),
+        "lane_baseline_left": (0.3, 0.5),
+        "lane_baseline_right": (0.4, 0.5),
+    }
+    try:
+        bad_image, bad_court, _ = parse_keypoints(collinear)
+        compute_homography(bad_image, bad_court, frame_width, frame_height)
+        rejected = False
+    except ValueError:
+        rejected = True
+    checker.check("collinear landmarks are refused", rejected)
+
+    try:
+        parse_keypoints({"baseline_left_corner": (0.1, 0.2)})
+        too_few_rejected = False
+    except ValueError:
+        too_few_rejected = True
+    checker.check("fewer than four landmarks are refused", too_few_rejected)
+
+    try:
+        parse_keypoints({f"bogus_{i}": (0.1 * i, 0.2) for i in range(4)})
+        unknown_rejected = False
+    except ValueError:
+        unknown_rejected = True
+    checker.check("unknown landmark names are refused", unknown_rejected)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify pipeline output")
     parser.add_argument(
@@ -283,6 +383,9 @@ def main() -> int:
 
         print("\nChecking against known ground truth")
         ground_truth_checks(checker)
+
+        print("\nChecking stage 5 homography maths")
+        homography_checks(checker)
 
     print(f"\nChecking structural invariants for {args.game_id}")
     structural_checks(checker, args.game_id)

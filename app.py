@@ -58,6 +58,16 @@ from pipeline.court_region import (
     save_profile,
     to_pixels,
 )
+from pipeline.court_geometry import (
+    COURT_LANDMARKS,
+    COURT_LENGTH_FT,
+    COURT_WIDTH_FT,
+    MIN_LANDMARKS,
+    compute_homography,
+    known_distance_checks,
+    parse_keypoints,
+    to_court_feet,
+)
 from pipeline.possession import possession_summary
 from pipeline.track_quality import EXPECTED_PLAYERS, summarize
 
@@ -407,6 +417,16 @@ with tabs[1]:
     else:
         tracks_df = load_parquet(str(trk_path), _mtime(trk_path))
         shot = shot_selector("trk", shots)
+
+        if tracks_df.empty:
+            # A zero-row parquet is a real state an over-tight filter can
+            # produce. Say so rather than dying on min() of nothing.
+            st.warning(
+                "The tracks file is empty — every detection was filtered out. "
+                "Re-run `02_track.py` and check `--min-confidence` and any "
+                "court polygon against the frame."
+            )
+            st.stop()
 
         if shot is None:
             lo = int(tracks_df["frame_idx"].min())
@@ -966,7 +986,215 @@ with tabs[3]:
                     "too high."
                 )
 with tabs[4]:
-    milestone_placeholder("Court Calibration", "Milestone 5", "05_calibrate.py")
+    st.subheader("Court Calibration")
+    st.caption(
+        "Annotate court landmarks, then check the homography: do the projected "
+        "dots land where the players actually are?"
+    )
+    st.caption(
+        "Until this stage exists every distance is in pixels, and a pixel is "
+        "worth more feet at the far end of the court than the near end. "
+        "Gravity is a distance metric, so it needs feet."
+    )
+
+    cal_profiles = list_profiles()
+    if not cal_profiles:
+        st.info("No court profile yet. Create one in the Tracking tab first.")
+    else:
+        cal_name = st.selectbox("Court profile", cal_profiles, key="cal_profile")
+        cal_profile = load_profile(cal_name)
+        stored_kp = cal_profile.get("court_keypoints") or {}
+
+        cal_frame_idx = frame_scrubber("cal", 0, max(info.frame_count - 1, 0))
+        cal_frame = get_frame(str(video_path), cal_frame_idx)
+
+        st.markdown("**Landmarks**")
+        st.caption(
+            "One per line: landmark_name x y, with x and y normalized 0-1. At "
+            "least 4, and not collinear - spread them across the court rather "
+            "than along one line. Known names: " + ", ".join(sorted(COURT_LANDMARKS))
+        )
+        if "cal_text" not in st.session_state:
+            st.session_state["cal_text"] = "\n".join(
+                name + " " + format(pt[0], "g") + " " + format(pt[1], "g")
+                for name, pt in stored_kp.items()
+            )
+        cal_raw = st.text_area("Landmarks", key="cal_text", height=170)
+
+        parsed_kp = {}
+        parse_error = None
+        for line in cal_raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.replace(",", " ").split()
+            if len(parts) != 3:
+                parse_error = "Expected `name x y`, got: " + line
+                break
+            try:
+                parsed_kp[parts[0]] = (float(parts[1]), float(parts[2]))
+            except ValueError:
+                parse_error = "x and y must be numbers: " + line
+                break
+
+        if parse_error:
+            st.error(parse_error)
+        elif len(parsed_kp) < MIN_LANDMARKS:
+            st.info(
+                str(len(parsed_kp)) + " landmark(s) so far; " + str(MIN_LANDMARKS)
+                + " are needed for a homography."
+            )
+        elif cal_frame is None:
+            st.error("Could not read that frame.")
+        else:
+            cal_h, cal_w = cal_frame.shape[:2]
+            try:
+                kp_image, kp_court, kp_names = parse_keypoints(parsed_kp)
+                homography, per_point, rms = compute_homography(
+                    kp_image, kp_court, cal_w, cal_h
+                )
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                mcols = st.columns(3)
+                mcols[0].metric("Landmarks", len(kp_names))
+                mcols[1].metric(
+                    "Reprojection error",
+                    format(rms, ".1f") + " px",
+                    help="How far annotated points land from where the "
+                    "homography puts them. This is the single number that says "
+                    "whether to trust this angle at all.",
+                )
+                mcols[2].metric("Worst landmark", format(per_point.max(), ".1f") + " px")
+
+                if rms > 20:
+                    st.warning(
+                        "High reprojection error - at least one landmark is "
+                        "probably misplaced. The worst offender is in the table "
+                        "below."
+                    )
+
+                left_col, right_col = st.columns(2)
+
+                with left_col:
+                    st.markdown("**Annotated frame**")
+                    canvas = cal_frame.copy()
+                    for name, point in parsed_kp.items():
+                        px = int(point[0] * cal_w)
+                        py = int(point[1] * cal_h)
+                        cv2.drawMarker(
+                            canvas, (px, py), (0, 255, 255), cv2.MARKER_CROSS, 26, 2
+                        )
+                        cv2.putText(
+                            canvas, name, (px + 8, py - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1,
+                        )
+                    st.image(bgr_to_rgb(canvas), width="stretch")
+
+                with right_col:
+                    st.markdown("**Radar - players projected onto the court**")
+                    radar = np.full((490, 280, 3), 245, dtype=np.uint8)
+
+                    def court_to_radar(pt):
+                        return int(15 + pt[0] * 5), int(15 + pt[1] * 5)
+
+                    cv2.rectangle(
+                        radar,
+                        court_to_radar((0, 0)),
+                        court_to_radar((COURT_WIDTH_FT, COURT_LENGTH_FT)),
+                        (60, 60, 60), 2,
+                    )
+                    cv2.line(
+                        radar,
+                        court_to_radar((0, COURT_LENGTH_FT / 2.0)),
+                        court_to_radar((COURT_WIDTH_FT, COURT_LENGTH_FT / 2.0)),
+                        (60, 60, 60), 1,
+                    )
+                    for landmark in (
+                        "lane_baseline_left", "lane_baseline_right",
+                        "free_throw_left", "free_throw_right",
+                    ):
+                        cv2.circle(
+                            radar, court_to_radar(COURT_LANDMARKS[landmark]),
+                            3, (150, 150, 150), -1,
+                        )
+
+                    if trk_path.exists():
+                        cal_tracks = load_parquet(str(trk_path), _mtime(trk_path))
+                        here = cal_tracks[
+                            (cal_tracks["frame_idx"] == cal_frame_idx)
+                            & (cal_tracks["class"] == CLASS_PLAYER)
+                        ]
+                        if here.empty:
+                            st.caption(
+                                "No tracks on this frame - scrub into the range "
+                                "you ran Stage 2 over."
+                            )
+                        else:
+                            feet = to_court_feet(
+                                homography,
+                                here[["foot_x", "foot_y"]].to_numpy(dtype=float),
+                            )
+                            for point in feet:
+                                if not np.isfinite(point).all():
+                                    continue
+                                cv2.circle(
+                                    radar, court_to_radar(point), 5, (200, 60, 60), -1
+                                )
+                    st.image(bgr_to_rgb(radar), width="stretch")
+                    st.caption(
+                        "Dots should sit inside the court and match where players "
+                        "stand in the frame. Dots outside the rectangle mean the "
+                        "homography is wrong."
+                    )
+
+                st.markdown("**Known distance checks**")
+                checks = known_distance_checks(
+                    homography, kp_image, kp_names, cal_w, cal_h
+                )
+                if checks:
+                    st.dataframe(
+                        pd.DataFrame(checks), width="stretch", hide_index=True
+                    )
+                    st.caption(
+                        "The milestone's done-when: real court distances projected "
+                        "through the homography should come out near their true "
+                        "values. These landmarks were used to fit it, so this "
+                        "checks internal consistency, not independent accuracy."
+                    )
+                else:
+                    st.caption(
+                        "No checkable pairs among these landmarks - add both lane "
+                        "baseline corners, or both free-throw corners."
+                    )
+
+                st.dataframe(
+                    pd.DataFrame(
+                        {
+                            "landmark": kp_names,
+                            "error_px": [round(float(e), 2) for e in per_point],
+                        }
+                    ).sort_values("error_px", ascending=False),
+                    width="stretch",
+                    hide_index=True,
+                )
+
+                if st.button("Save landmarks to profile", key="cal_save"):
+                    written = save_profile(
+                        cal_name,
+                        cal_profile.get("court_polygon"),
+                        cal_profile.get("tracker"),
+                        cal_profile.get("description", ""),
+                        cal_profile.get("backend"),
+                        parsed_kp,
+                    )
+                    st.success("Wrote " + str(written))
+
+                st.code(
+                    "python pipeline/05_calibrate.py --game-id " + game_id
+                    + " --court-profile " + cal_name,
+                    language="bash",
+                )
 with tabs[5]:
     milestone_placeholder("Identity Resolution", "Milestone 6", "03_identify.py")
 with tabs[6]:

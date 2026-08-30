@@ -168,6 +168,7 @@ def save_profile(
     tracker: dict | None = None,
     description: str = "",
     backend: str | None = None,
+    keypoints: dict | None = None,
 ) -> Path:
     """Write a court profile, creating `data/calibration/` if needed.
 
@@ -187,6 +188,14 @@ def save_profile(
         )
     )
     body = {"name": name, "description": description}
+    if keypoints:
+        # Stage 5's hand-annotated court landmarks. They belong with the
+        # polygon because both describe the same camera angle, and both are
+        # reused across every game shot from that position.
+        body["court_keypoints"] = {
+            landmark: [round(float(x), 4), round(float(y), 4)]
+            for landmark, (x, y) in keypoints.items()
+        }
     if backend:
         # Tracker settings only mean anything alongside the backend they were
         # tuned for — the backends do not share a parameter vocabulary.

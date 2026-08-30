@@ -20,7 +20,9 @@ pipeline/team_clustering.py     Stage 3 Part A — kit-colour clustering
 pipeline/03_identify.py         Stage 3 CLI (Part A done, Part B stub)
 pipeline/possession.py          Stage 4 — ball selection + possession logic
 pipeline/04_ball_possession.py  Stage 4 CLI
-pipeline/05_..06_*.py           stubs — docstrings and NotImplementedError
+pipeline/court_geometry.py      Stage 5 — court landmarks, homography, checks
+pipeline/05_calibrate.py        Stage 5 CLI
+pipeline/06_aggregate.py        stub — docstrings and NotImplementedError
 tools/make_test_clip.py         synthetic clip with known ground truth
 data/calibration/*.json         court profiles, one per camera angle
 ```
@@ -183,10 +185,43 @@ percentile 331px), so anything from 60px to 200px selects within three
 percentage points of the same frames. The ball is either clearly held or
 clearly in flight.
 
+### Stage 5 deviations
+
+**Keypoints live in the court profile, not a per-shot file.** The spec notes
+that camera angles repeat across shots and suggests calibrating once per
+angle. Since a profile is already keyed by camera angle and already holds the
+court polygon, the annotated landmarks go there too. `05_calibrate.py` still
+writes one output file per shot, as the schema specifies, so Stage 6 reads a
+predictable path per shot and a single shot can later be re-fitted after a
+mid-possession zoom without special-casing.
+
+**Court axes run width-first.** Origin at a baseline corner as the stub
+requires, with x along the baseline (0-50) and y down the length (0-94). This
+is the opposite of the usual "x is the long axis" instinct, and getting it
+backwards yields a homography that fits perfectly and means nothing, so it is
+stated in the module docstring too.
+
+**Reprojection error is reported in pixels, not feet.** Feet would flatter
+distant landmarks, where a large ground error is a small pixel one — and
+pixels are what you can actually see when checking the overlay.
+
+**The known-distance check is weaker than it looks.** It measures real court
+distances through the homography, which is the milestone's stated done-when,
+but those landmarks were used to *fit* the homography, so it verifies internal
+consistency rather than independent accuracy. It still catches a fit that
+cannot reproduce the lane width, which is the failure that matters.
+
+**`--max-error-px` refuses to write a bad calibration.** A wrong homography is
+worse than none: it produces confident, wrong distances that look plausible
+downstream.
+
 ## Known gaps
 
 - Real footage has been processed, but only one possession (465 frames of
   7,786). Nothing has run at scale.
+- No camera angle has been annotated for Stage 5, so no homography exists
+  for real footage and every distance is still in pixels. The maths is
+  verified against a constructed transform; the annotation is a human step.
 - Stage 3 misassigns roughly 2 tracks in 25. Both observed failures were
   crops contaminated by background or an overlapping player rather than kit
   colour. The embedding-based feature in `04-identity-resolution.md` (SigLIP

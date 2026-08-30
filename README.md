@@ -55,8 +55,10 @@ generic weights, skipped otherwise.
 
 **No milestone is closed yet.** Stages 0-4 run on real broadcast footage —
 shot segmentation, detection, tracking, team classification and ball
-possession. Stages 5-6 are stubs, so there is no gravity number yet and the
-research question above is unanswered.
+possession. Stage 5 (court calibration) is implemented and its maths is
+verified, but no camera angle has been annotated yet, so distances are still
+in pixels rather than feet. Stage 6 is a stub. There is no gravity number
+yet, and the research question above is unanswered.
 
 Detection and tracking have run on **one hand-picked possession** — 465 of
 7,786 frames, about 6% of a single clip. Shot segmentation has run over full
@@ -233,6 +235,21 @@ Frames where nobody is within reach report a null handler, which is the
 correct answer for a ball in flight rather than a failure. Check it in the
 viewer's Ball Possession tab — the highlighted player should be the one
 holding the ball, and possession changes should line up with passes.
+
+Convert pixel positions to court feet (Milestone 5). Annotate the court
+landmarks for your camera angle in the viewer's Court Calibration tab, save
+them to a profile, then:
+
+```bash
+python pipeline/05_calibrate.py --game-id 0022500123 --court-profile msg_main --max-error-px 15
+```
+
+Annotation is manual and per camera angle, which the spec asks for and which
+is right: identifying a free-throw line intersection is a judgment a person
+makes in seconds and a heuristic gets confidently wrong. Because profiles are
+keyed by angle, you annotate once and reuse it across every game from that
+camera. Watch the reprojection error and the radar view — dots outside the
+court rectangle mean the homography is wrong.
 
 No footage yet? Generate a synthetic clip with known ground truth (3 camera
 cuts, 10 players, 1 ball) and run the whole path against it:
