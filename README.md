@@ -80,7 +80,8 @@ nba-gravity/
 │   ├── 06-roadmap.md            # build order / milestones
 │   ├── 07-known-challenges.md   # broadcast-specific failure modes
 │   ├── 08-ui-design.md          # Streamlit testing/debugging viewer, per stage
-│   └── 09-implementation-notes.md # what's built, deviations from spec, verification
+│   ├── 09-implementation-notes.md # what's built, deviations from spec, verification
+│   └── 10-testing.md           # how to verify it yourself, per stage
 ├── data/
 │   ├── raw_video/                # source mp4s, one folder per game_id
 │   ├── rosters/                  # team_id -> {jersey_number: player_name}
@@ -239,6 +240,30 @@ cuts, 10 players, 1 ball) and run the whole path against it:
 ```bash
 python tools/make_test_clip.py --game-id TESTCLIP && python pipeline/01_detect.py --game-id TESTCLIP --detector colorblob && python pipeline/02_track.py --game-id TESTCLIP
 ```
+
+## Verifying it works
+
+```bash
+python tools/verify.py
+```
+
+Regenerates the synthetic clip, runs every implemented stage over it, and
+checks the result against answers known from how the clip was built — three
+cuts at fixed frames, ten players per frame, five per kit colour. Expect
+26/26 passed; exit code is 0 only if all of them do, so it works as a gate.
+
+For real footage, where no ground truth exists:
+
+```bash
+python tools/verify.py --game-id S_N3_HD --structural
+```
+
+That checks the invariants which must hold for any video (documented columns,
+no id appearing twice in a frame, possession referring to real tracks). It
+cannot tell you the output is *good* — that is what the viewer is for.
+
+`docs/10-testing.md` walks through both, including what to look for in each
+viewer tab and what each failure mode looks like.
 
 ## Footage and licensing
 
