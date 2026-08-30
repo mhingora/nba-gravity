@@ -19,7 +19,7 @@ checks the output against answers that are known because the clip was built
 with them: three cuts at fixed frames, ten players per frame, five per kit
 colour. Exit code is 0 only if everything passes, so it works as a gate.
 
-Expect **26/26 passed**. Run it after any change to the pipeline; if a check
+Expect **32/32 passed**. Run it after any change to the pipeline; if a check
 that used to pass now fails, that change broke something.
 
 What it proves: schemas, shot segmentation, per-shot tracker resets, team
@@ -40,9 +40,10 @@ frame, foot points at the bottom-centre of their box, possession referring to
 tracks that exist, confidences within 0-1.
 
 This cannot tell you the output is *correct*. It tells you the tables are not
-malformed — which is worth knowing, because two of the bugs found so far were
-exactly that: tracker ids colliding with the ball's `-1` sentinel, and a track
-reported as spanning 107% of its shot.
+malformed — which is worth knowing, because most bugs found so far were
+exactly that: tracker ids colliding with the ball's `-1` sentinel, a track
+reported as spanning 107% of its shot, and Stage 2 silently writing an empty
+table when its filters rejected everything.
 
 ## 2. Visual — the viewer
 
@@ -105,6 +106,22 @@ clearly the home whites and the other clearly the away darks, the stage works.
   players. If it is swallowing players, raise `--ambiguity-ratio`.
 - Lopsided groups (say 18 vs 4) mean one kit is being split.
 
+### Tab 4 — Ball Possession
+
+**Question: is the highlighted player the one actually holding the ball?**
+
+Scrub through a span and watch the `ball_distance_px` number. It should sit
+near 0 while someone holds the ball and spike during a pass.
+
+- Frames with **no handler are correct**, not failures — a ball in flight
+  belongs to nobody, and roughly half of a possession's frames legitimately
+  have no holder.
+- The **possession timeline** should change at passes and rebounds. Many very
+  short spans mean `--debounce-frames` is too low; one span swallowing an
+  obvious pass means it is too high.
+- A handler far from the ball means the ball selection has locked onto a false
+  positive; lower `--max-jump-frac`.
+
 ### Tab 5 — Court Calibration
 
 **Question: does the homography put players where they actually are?**
@@ -122,22 +139,6 @@ and type them.
   internally consistent but wrong — usually two of them swapped.
 - Spread landmarks out. Four points along the baseline are collinear and are
   refused outright rather than fitted to nonsense.
-
-### Tab 4 — Ball Possession
-
-**Question: is the highlighted player the one actually holding the ball?**
-
-Scrub through a span and watch the `ball_distance_px` number. It should sit
-near 0 while someone holds the ball and spike during a pass.
-
-- Frames with **no handler are correct**, not failures — a ball in flight
-  belongs to nobody, and roughly half of a possession's frames legitimately
-  have no holder.
-- The **possession timeline** should change at passes and rebounds. Many very
-  short spans mean `--debounce-frames` is too low; one span swallowing an
-  obvious pass means it is too high.
-- A handler far from the ball means the ball selection has locked onto a false
-  positive; lower `--max-jump-frac`.
 
 ## 3. Per-run scorecards
 
@@ -162,7 +163,8 @@ In particular:
 - **Milestone 1 is open.** Six of ten players hold a single id for a full
   possession; the rest fragment. No automated check will tell you that is
   acceptable — you have to watch the clip and decide.
-- **Stages 5-6 do not exist**, so distances are still in pixels rather than
-  feet, and no track resolves to a player name.
+- **No camera angle has been annotated**, so despite Stage 5 existing there
+  is no homography for real footage and distances are still in pixels rather
+  than feet. **Stage 6 does not exist**, so no track resolves to a player name.
 - **Everything so far is one possession.** 465 frames of 7,786. Behaviour at
   scale, across camera angles and replays, is unmeasured.
