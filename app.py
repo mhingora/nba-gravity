@@ -80,12 +80,14 @@ st.set_page_config(page_title="NBA Gravity — Pipeline Viewer", layout="wide")
 
 BALL_COLOR_BGR = (40, 140, 245)
 MAX_GIF_FRAMES = 400
-# Display width for the click-to-annotate frame. Purely a layout choice: the
-# component reports the rendered width and height alongside each click
+# The click-to-annotate frame is rendered at "stretch" so it fills whatever
+# container holds it. A fixed pixel width overflows a narrow column and is
+# *clipped* rather than scaled, which silently hides part of the court and
+# makes those landmarks unreachable. Normalising uses the rendered width and
+# height the component returns with each click
 # (`sendValue({x: offsetX, y: offsetY, width: img.width, height: img.height})`),
-# so normalising uses those numbers rather than assuming this one survived
-# whatever CSS did to the element.
-CLICK_DISPLAY_WIDTH = 900
+# so any rendered size is handled correctly.
+CLICK_DISPLAY_WIDTH = "stretch"
 
 
 # --------------------------------------------------------------------------
@@ -1068,8 +1070,8 @@ with tabs[4]:
                 # which it returns with the click. Dividing by the width we
                 # asked for would silently skew every landmark if the browser
                 # scaled the image to fit its column.
-                shown_w = float(pending.get("width") or CLICK_DISPLAY_WIDTH)
-                shown_h = float(pending.get("height") or CLICK_DISPLAY_WIDTH)
+                shown_w = float(pending.get("width") or 0.0)
+                shown_h = float(pending.get("height") or 0.0)
                 nx = pending["x"] / shown_w if shown_w else 0.0
                 ny = pending["y"] / shown_h if shown_h else 0.0
                 target = st.session_state.get("cal_click_target")
@@ -1184,30 +1186,33 @@ with tabs[4]:
                     "click it in the frame."
                 )
 
-            left_col, right_col = st.columns(2)
+            # Full width, not a half column: the frame is 16:9 and the whole
+            # court has to be reachable by a click.
+            st.markdown("**Annotated frame**")
+            if streamlit_image_coordinates is None:
+                st.image(bgr_to_rgb(canvas), width="stretch")
+                st.caption(
+                    "Install `streamlit-image-coordinates` to place landmarks "
+                    "by clicking instead of typing."
+                )
+            else:
+                streamlit_image_coordinates(
+                    bgr_to_rgb(canvas),
+                    width=CLICK_DISPLAY_WIDTH,
+                    key="cal_click",
+                )
+                st.caption(
+                    "Click to place the landmark selected above. The cross "
+                    "should land exactly where you clicked - if it does not, "
+                    "the coordinates are in the text box and can be nudged by "
+                    "hand. The grid labels should run from 0.05 to 0.95 across "
+                    "the full width; if they stop short, the frame is being "
+                    "clipped and part of the court is unreachable."
+                )
 
-            with left_col:
-                st.markdown("**Annotated frame**")
-                if streamlit_image_coordinates is None:
-                    st.image(bgr_to_rgb(canvas), width="stretch")
-                    st.caption(
-                        "Install `streamlit-image-coordinates` to place "
-                        "landmarks by clicking instead of typing."
-                    )
-                else:
-                    streamlit_image_coordinates(
-                        bgr_to_rgb(canvas),
-                        width=CLICK_DISPLAY_WIDTH,
-                        key="cal_click",
-                    )
-                    st.caption(
-                        "Click to place the landmark selected above. The cross "
-                        "should land exactly where you clicked - if it does "
-                        "not, the coordinates are in the text box and can be "
-                        "nudged by hand."
-                    )
+            radar_col, table_col = st.columns([1, 2])
 
-            with right_col:
+            with radar_col:
                 st.markdown("**Radar - players projected onto the court**")
                 if homography is None:
                     st.caption(
@@ -1273,6 +1278,25 @@ with tabs[4]:
                     )
 
             if homography is not None:
+                with table_col:
+                    st.markdown("**Landmark errors**")
+                    st.dataframe(
+                        pd.DataFrame(
+                            {
+                                "landmark": kp_names,
+                                "error_px": [
+                                    round(float(e), 2) for e in per_point
+                                ],
+                            }
+                        ).sort_values("error_px", ascending=False),
+                        width="stretch",
+                        hide_index=True,
+                    )
+                    st.caption(
+                        "Fix the worst offender first - one badly placed "
+                        "landmark drags the whole fit."
+                    )
+
                 st.markdown("**Known distance checks**")
                 checks = known_distance_checks(
                     homography, kp_image, kp_names, cal_w, cal_h
@@ -1293,17 +1317,6 @@ with tabs[4]:
                         "No checkable pairs among these landmarks - add both "
                         "lane baseline corners, or both free-throw corners."
                     )
-
-                st.dataframe(
-                    pd.DataFrame(
-                        {
-                            "landmark": kp_names,
-                            "error_px": [round(float(e), 2) for e in per_point],
-                        }
-                    ).sort_values("error_px", ascending=False),
-                    width="stretch",
-                    hide_index=True,
-                )
 
                 if st.button("Save landmarks to profile", key="cal_save"):
                     written = save_profile(
