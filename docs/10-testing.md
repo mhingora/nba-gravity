@@ -131,6 +131,12 @@ are written into the text box, where they can also be nudged by hand. A
 labelled coordinate grid is available if you would rather read positions off
 and type them.
 
+![Court landmarks](court-landmarks.png)
+
+Every landmark name, drawn where it sits on a real court, with the
+coordinates the code already holds. Regenerate with
+`python tools/court_reference.py` if the landmark table changes.
+
 - **Reprojection error** under ~15px is good. Above 20 the tab warns you, and
   the per-landmark table names the worst offender.
 - The **radar** is the check that matters. Dots must land inside the court

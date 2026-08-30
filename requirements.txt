@@ -26,5 +26,8 @@ streamlit-image-coordinates
 # Stage 3 — team colour clustering
 scikit-learn
 
+# tools/court_reference.py only — regenerates docs/court-landmarks.png
+matplotlib
+
 # Later stages — uncomment when their milestone starts
 # easyocr            # jersey number OCR (Stage 6)

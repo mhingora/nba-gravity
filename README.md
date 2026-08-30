@@ -244,8 +244,9 @@ them to a profile, then:
 python pipeline/05_calibrate.py --game-id 0022500123 --court-profile msg_main --max-error-px 15
 ```
 
-Annotation is click-to-place: choose a landmark, click it in the frame, watch
-the reprojection error and the radar. It is manual and per camera angle,
+`docs/court-landmarks.png` shows where every landmark name sits on a real
+court. Annotation is click-to-place: choose a landmark, click it in the frame,
+watch the reprojection error and the radar. It is manual and per camera angle,
 which the spec asks for and which is right: identifying a free-throw line intersection is a judgment a person
 makes in seconds and a heuristic gets confidently wrong. Because profiles are
 keyed by angle, you annotate once and reuse it across every game from that
