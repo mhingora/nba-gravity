@@ -18,7 +18,9 @@ pipeline/01_detect.py           Stage 0 + 1 CLI
 pipeline/02_track.py            Stage 2 CLI
 pipeline/team_clustering.py     Stage 3 Part A — kit-colour clustering
 pipeline/03_identify.py         Stage 3 CLI (Part A done, Part B stub)
-pipeline/04_..06_*.py           stubs — docstrings and NotImplementedError
+pipeline/possession.py          Stage 4 — ball selection + possession logic
+pipeline/04_ball_possession.py  Stage 4 CLI
+pipeline/05_..06_*.py           stubs — docstrings and NotImplementedError
 tools/make_test_clip.py         synthetic clip with known ground truth
 data/calibration/*.json         court profiles, one per camera angle
 ```
@@ -150,6 +152,36 @@ worse than to its own, so clean input can legitimately produce no outliers.
 frame-agreement term, so the value is the clipped silhouette scaled by how
 many frames yielded a usable crop, and describes confidence in the team label
 alone.
+
+### Stage 4 deviations
+
+**A ball-selection step the spec does not mention.** The spec assumes one ball
+position per frame. The detector supplies up to five: 243 of 398 ball-bearing
+frames on the test possession carry more than one candidate. `select_ball`
+resolves them by temporal continuity, since Stage 2 does not carry a
+confidence column through for ball rows.
+
+**A per-frame jump gate on the ball.** Continuity alone is not enough — a
+single false positive in the crowd captures the ball track and drags every
+later frame with it. Spot-checking produced handlers 250-290px from a "ball"
+sitting among the photographers. Candidates further than
+`--max-jump-frac` x median player height from the last accepted position are
+refused, and after five consecutive refusals the anchor drops so a genuine
+long pass can be re-acquired.
+
+**Possession is not sticky.** An early version carried the last handler
+through frames where the ball was missing or far away, which read as 96% of
+frames having a handler. That contradicts the spec — a ball in flight belongs
+to nobody — and would have invented possession that never happened. The
+debounced id now suppresses flicker *between players* only; a frame with
+nobody within reach reports null.
+
+**The possession radius is a fraction of player-box height**, not a pixel
+constant, so it scales with resolution. It also turns out barely to matter:
+distances are strongly bimodal (median 0px, 75th percentile 13px, 90th
+percentile 331px), so anything from 60px to 200px selects within three
+percentage points of the same frames. The ball is either clearly held or
+clearly in flight.
 
 ## Known gaps
 

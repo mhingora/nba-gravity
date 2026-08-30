@@ -53,10 +53,10 @@ generic weights, skipped otherwise.
 
 ## Status
 
-**No milestone is closed yet.** Stages 0-3 run on real broadcast footage —
-shot segmentation, detection, tracking, and team classification. Stages 4-6
-are stubs, so there is no gravity number yet and the research question above
-is unanswered.
+**No milestone is closed yet.** Stages 0-4 run on real broadcast footage —
+shot segmentation, detection, tracking, team classification and ball
+possession. Stages 5-6 are stubs, so there is no gravity number yet and the
+research question above is unanswered.
 
 Detection and tracking have run on **one hand-picked possession** — 465 of
 7,786 frames, about 6% of a single clip. Shot segmentation has run over full
@@ -221,6 +221,17 @@ Clusters are named `light` / `dark` by kit brightness rather than an arbitrary
 favours neither team become `other` — referees, coaches, anyone the detector
 picked up. Check the result in the viewer's Team Classification tab: the two
 crop groups should obviously be the two kits.
+
+Then work out who has the ball each frame (Milestone 4):
+
+```bash
+python pipeline/04_ball_possession.py --game-id 0022500123
+```
+
+Frames where nobody is within reach report a null handler, which is the
+correct answer for a ball in flight rather than a failure. Check it in the
+viewer's Ball Possession tab — the highlighted player should be the one
+holding the ball, and possession changes should line up with passes.
 
 No footage yet? Generate a synthetic clip with known ground truth (3 camera
 cuts, 10 players, 1 ball) and run the whole path against it:

@@ -38,6 +38,7 @@ from pipeline.common import (
     load_shots,
     read_frame,
     identity_path,
+    possession_path,
     shot_diffs_path,
     tracks_path,
     video_info,
@@ -57,6 +58,7 @@ from pipeline.court_region import (
     save_profile,
     to_pixels,
 )
+from pipeline.possession import possession_summary
 from pipeline.track_quality import EXPECTED_PLAYERS, summarize
 
 st.set_page_config(page_title="NBA Gravity — Pipeline Viewer", layout="wide")
@@ -856,7 +858,113 @@ with tabs[2]:
                 "aggregation needs a name."
             )
 with tabs[3]:
-    milestone_placeholder("Ball Possession", "Milestone 4", "04_ball_possession.py")
+    st.subheader("Ball Possession")
+    st.caption(
+        "Does the flagged handler match who actually has the ball, and do "
+        "possession changes line up with passes rather than flickering?"
+    )
+
+    poss_path = possession_path(game_id)
+    if not poss_path.exists():
+        st.info(
+            "No possession output yet. Run: "
+            "`python pipeline/04_ball_possession.py --game-id " + game_id + "`"
+        )
+    elif not trk_path.exists():
+        st.warning("Tracks are missing, so boxes cannot be drawn.")
+    else:
+        poss = load_parquet(str(poss_path), _mtime(poss_path))
+        poss_tracks = load_parquet(str(trk_path), _mtime(trk_path))
+
+        shot = shot_selector("poss", shots)
+        if shot is None:
+            plo, phi = int(poss["frame_idx"].min()), int(poss["frame_idx"].max())
+        else:
+            plo, phi = shot.start_frame, shot.end_frame
+        window = poss[poss["frame_idx"].between(plo, phi)]
+
+        if window.empty:
+            st.caption("No possession rows in this range.")
+        else:
+            held = window["ball_handler_tracker_id"].notna()
+            resolved = window["ball_distance_px"].notna()
+            pcols = st.columns(4)
+            pcols[0].metric("Frames", len(window))
+            pcols[1].metric(
+                "With a handler", f"{100.0 * held.mean():.0f}%"
+            )
+            pcols[2].metric(
+                "Ball located",
+                f"{100.0 * resolved.mean():.0f}%",
+                help="Frames where a plausible ball position survived the "
+                "jump gate. Everything else is genuinely unknown.",
+            )
+            pcols[3].metric(
+                "Possession spans",
+                int(possession_summary(window)["ball_handler_tracker_id"].notna().sum()),
+            )
+
+            pframe = frame_scrubber("poss", plo, phi)
+            row = window[window["frame_idx"] == pframe]
+            handler = None
+            if not row.empty and pd.notna(row.iloc[0]["ball_handler_tracker_id"]):
+                handler = int(row.iloc[0]["ball_handler_tracker_id"])
+
+            frame = get_frame(str(video_path), pframe)
+            if frame is None:
+                st.error("Could not read frame " + str(pframe) + ".")
+            else:
+                canvas = frame.copy()
+                here = poss_tracks[
+                    (poss_tracks["frame_idx"] == pframe)
+                    & (poss_tracks["class"] == CLASS_PLAYER)
+                ]
+                for _, track_row in here.iterrows():
+                    is_handler = int(track_row["tracker_id"]) == handler
+                    cv2.rectangle(
+                        canvas,
+                        (int(track_row["x1"]), int(track_row["y1"])),
+                        (int(track_row["x2"]), int(track_row["y2"])),
+                        (0, 220, 0) if is_handler else (170, 170, 170),
+                        4 if is_handler else 1,
+                    )
+                canvas = draw_ball(
+                    canvas,
+                    poss_tracks[
+                        (poss_tracks["frame_idx"] == pframe)
+                        & (poss_tracks["class"] == CLASS_BALL)
+                    ],
+                )
+                st.image(bgr_to_rgb(canvas), width="stretch")
+
+                distance = row.iloc[0]["ball_distance_px"] if not row.empty else float("nan")
+                if handler is None:
+                    st.caption(
+                        "No handler this frame — the ball is in flight, or no "
+                        "plausible ball position was found. Both are correct "
+                        "answers, not failures."
+                    )
+                else:
+                    st.caption(
+                        "Handler #" + str(handler) + " at "
+                        + ("unknown" if pd.isna(distance) else str(int(distance)) + "px")
+                        + ". Watching this number spike and drop as passes "
+                        "happen is the fastest check on the threshold."
+                    )
+
+            st.markdown("**Possession timeline**")
+            spans = possession_summary(window)
+            spans = spans[spans["ball_handler_tracker_id"].notna()]
+            if spans.empty:
+                st.caption("No confirmed possessions in this range.")
+            else:
+                st.dataframe(spans, width="stretch", hide_index=True)
+                st.caption(
+                    "Confirm each change lines up with a pass or rebound in "
+                    "the video. Many very short spans mean the debounce is "
+                    "too low; one span covering an obvious pass means it is "
+                    "too high."
+                )
 with tabs[4]:
     milestone_placeholder("Court Calibration", "Milestone 5", "05_calibrate.py")
 with tabs[5]:
