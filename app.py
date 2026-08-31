@@ -1041,8 +1041,41 @@ with tabs[4]:
         cal_profile = load_profile(cal_name)
         stored_kp = cal_profile.get("court_keypoints") or {}
 
-        cal_frame_idx = frame_scrubber("cal", 0, max(info.frame_count - 1, 0))
+        # Scrubbing 7,000+ frames to find one shot is not navigation. Picking
+        # the shot narrows the slider to it and starts in the middle, which is
+        # also where a single homography is most accurate — its error grows
+        # with distance from the annotated frame as the camera pans.
+        cal_shot = shot_selector("cal", shots)
+        if cal_shot is None:
+            cal_lo, cal_hi = 0, max(info.frame_count - 1, 0)
+        else:
+            cal_lo, cal_hi = cal_shot.start_frame, cal_shot.end_frame
+            middle = (cal_lo + cal_hi) // 2
+            if st.session_state.get("cal_shot_span") != (cal_lo, cal_hi):
+                st.session_state["cal_shot_span"] = (cal_lo, cal_hi)
+                st.session_state["cal_frame"] = middle
+            st.caption(
+                f"Shot {cal_shot.shot_id}: frames {cal_lo}-{cal_hi} "
+                f"({cal_hi - cal_lo + 1} frames). Annotating near the middle "
+                f"(frame {middle}) keeps the homography's error balanced "
+                "across the shot."
+            )
+
+        cal_frame_idx = frame_scrubber("cal", cal_lo, cal_hi)
         cal_frame = get_frame(str(video_path), cal_frame_idx)
+
+        if trk_path.exists():
+            _cal_tracks = load_parquet(str(trk_path), _mtime(trk_path))
+            if not _cal_tracks.empty:
+                t_lo = int(_cal_tracks["frame_idx"].min())
+                t_hi = int(_cal_tracks["frame_idx"].max())
+                if not (t_lo <= cal_frame_idx <= t_hi):
+                    st.info(
+                        f"Tracks only exist for frames {t_lo}-{t_hi}, so the "
+                        "radar will be empty here. The radar is the check that "
+                        "tells you the homography is right, so annotate inside "
+                        "that range."
+                    )
 
         st.markdown("**Landmarks**")
         st.caption(
