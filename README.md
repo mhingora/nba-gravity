@@ -212,6 +212,20 @@ Then inspect the results in the viewer:
 streamlit run app.py
 ```
 
+On Windows, `streamlit` is only on `PATH` while the venv is activated, and
+`cd F:\...` from a `C:` prompt does not change drive. Either use the
+launcher, which needs neither and can be double-clicked:
+
+```bash
+run_viewer.bat
+```
+
+or call the venv's interpreter directly, which works from any directory:
+
+```bash
+.venv\Scripts\python.exe -m streamlit run app.py
+```
+
 Sort the tracked players into teams (Milestone 3) — gravity is measured
 against defenders, so this has to happen before any distance means anything:
 

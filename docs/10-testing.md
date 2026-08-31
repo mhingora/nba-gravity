@@ -51,6 +51,9 @@ table when its filters rejected everything.
 streamlit run app.py
 ```
 
+On Windows use `run_viewer.bat` (double-clickable, needs no activation) or
+`.venv\Scripts\python.exe -m streamlit run app.py`.
+
 Pick the game in the sidebar. The sidebar also shows which stages have run.
 
 ### Tab 1 — Detection
