@@ -145,6 +145,11 @@ coordinates the code already holds. Regenerate with
   internally consistent but wrong — usually two of them swapped.
 - Spread landmarks out. Four points along the baseline are collinear and are
   refused outright rather than fitted to nonsense.
+- **Annotate near the middle of the possession you care about.** The
+  broadcast camera pans within a shot, and one homography cannot follow it,
+  so accuracy is best near the annotated frame and worst at the extremes.
+  Check the radar at the start, middle and end of a shot rather than trusting
+  one frame.
 
 ## 3. Per-run scorecards
 

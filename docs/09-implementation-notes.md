@@ -222,6 +222,18 @@ downstream.
 - No camera angle has been annotated for Stage 5, so no homography exists
   for real footage and every distance is still in pixels. The maths is
   verified against a constructed transform; the annotation is a human step.
+- **One homography per camera angle is an approximation this footage
+  violates.** The spec assumes a camera position repeats across shots and
+  suggests recomputing only if a shot looks off. Measured on shot 11 of the
+  test clip, the broadcast camera pans continuously *within* a single shot:
+  an identical fixed crop taken at frames 3097, 3300 and 3561 shows three
+  different pieces of court. A static homography is therefore only accurate
+  near the frame it was annotated on, and degrades across the rest of the
+  shot. The standard fix is to annotate one frame and then propagate the
+  homography frame to frame by estimating camera motion from static court
+  features — the same technique BoT-SORT's camera motion compensation uses.
+  Until that exists, treat projected distances as approximate and prefer
+  annotating a frame near the middle of the possession being measured.
 - Stage 3 misassigns roughly 2 tracks in 25. Both observed failures were
   crops contaminated by background or an overlapping player rather than kit
   colour. The embedding-based feature in `04-identity-resolution.md` (SigLIP
