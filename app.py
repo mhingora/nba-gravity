@@ -1107,6 +1107,11 @@ with tabs[4]:
                 shown_h = float(pending.get("height") or 0.0)
                 nx = pending["x"] / shown_w if shown_w else 0.0
                 ny = pending["y"] / shown_h if shown_h else 0.0
+                st.session_state["cal_click_debug"] = (
+                    f"click ({pending['x']:.0f}, {pending['y']:.0f}) in a "
+                    f"{shown_w:.0f}x{shown_h:.0f} rendered image "
+                    f"-> ({nx:.4f}, {ny:.4f}) normalized"
+                )
                 target = st.session_state.get("cal_click_target")
                 existing = st.session_state.get("cal_text", "")
                 kept = [
@@ -1205,7 +1210,17 @@ with tabs[4]:
                 mcols[2].metric(
                     "Worst landmark", format(per_point.max(), ".1f") + " px"
                 )
-                if rms > 20:
+                if len(kp_names) == MIN_LANDMARKS:
+                    st.warning(
+                        "With exactly 4 landmarks the reprojection error is "
+                        "always 0 and means nothing: a homography has 8 degrees "
+                        "of freedom and 4 points give exactly 8 equations, so "
+                        "the fit is exact whether or not the points are right. "
+                        "The known-distance checks are equally vacuous for the "
+                        "same reason. **Add a 5th and 6th landmark** to get a "
+                        "real residual, and trust the radar until you do."
+                    )
+                elif rms > 20:
                     st.warning(
                         "High reprojection error - at least one landmark is "
                         "probably misplaced. The worst offender is in the table "
@@ -1242,6 +1257,11 @@ with tabs[4]:
                     "the full width; if they stop short, the frame is being "
                     "clipped and part of the court is unreachable."
                 )
+                if st.session_state.get("cal_click_debug"):
+                    # The raw payload, because a mis-scaled click is otherwise
+                    # only visible much later as a wrong homography. The
+                    # rendered size here should match the image you see.
+                    st.caption(f"last {st.session_state['cal_click_debug']}")
 
             radar_col, table_col = st.columns([1, 2])
 
@@ -1352,15 +1372,24 @@ with tabs[4]:
                     )
 
                 if st.button("Save landmarks to profile", key="cal_save"):
+                    note = cal_profile.get("description", "")
+                    stamp = f"[landmarks annotated on {game_id} frame {cal_frame_idx}]"
+                    # Strip any previous stamp so re-saving does not stack them.
+                    base = note.split(" [landmarks annotated on")[0].rstrip()
                     written = save_profile(
                         cal_name,
                         cal_profile.get("court_polygon"),
                         cal_profile.get("tracker"),
-                        cal_profile.get("description", ""),
+                        (base + " " + stamp).strip(),
                         cal_profile.get("backend"),
                         parsed_kp,
                     )
                     st.success("Wrote " + str(written))
+                    st.caption(
+                        "The frame is recorded in the profile description, so "
+                        "the landmarks can be checked against the picture they "
+                        "were placed on."
+                    )
 
                 st.code(
                     "python pipeline/05_calibrate.py --game-id " + game_id
