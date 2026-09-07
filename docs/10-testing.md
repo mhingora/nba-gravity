@@ -142,6 +142,26 @@ Every landmark name, drawn where it sits on a real court, with the
 coordinates the code already holds. Regenerate with
 `python tools/court_reference.py` if the landmark table changes.
 
+Reading that top-down and then finding the same corner in a side-on
+broadcast frame is the step that actually trips people up — the lane stops
+looking like a rectangle, and "left" stops meaning "on the left of the
+screen". So the same landmarks are also drawn as a camera sees them:
+
+![Court landmarks, camera view](court-landmarks-camera.png)
+
+The perspective there is computed by projecting the real court model, not
+drawn by hand, so each label sits where that landmark genuinely would.
+Regenerate with `python tools/court_camera_reference.py`.
+
+**Left versus right.** The two `left` names go on one long side of the lane
+and the two `right` names on the other. Which physical side you call left
+does not matter: naming the other one consistently produces a mirrored
+court, and a mirror preserves every distance, so a distance metric is
+unaffected. Mixing the two — `lane_baseline_left` from the far side,
+`free_throw_left` from the near side — makes the quadrilateral cross itself,
+and the resulting homography is nonsense that can still report a small
+residual. The tab checks for that crossing and refuses it.
+
 - **Reprojection error** under ~15px is good. Above 20 the tab warns you, and
   the per-landmark table names the worst offender.
 - The **radar** is the check that matters. Dots must land inside the court
