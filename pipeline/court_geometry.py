@@ -74,6 +74,60 @@ KNOWN_DISTANCES: list[tuple[str, str, float]] = [
 ]
 
 
+# The four lane corners, in the order they occur walking around the lane.
+LANE_CYCLE = (
+    "lane_baseline_left",
+    "lane_baseline_right",
+    "free_throw_right",
+    "free_throw_left",
+)
+
+
+def lane_orientation_problem(keypoints: dict) -> str | None:
+    """Return a complaint if the lane corners are named inconsistently.
+
+    Which physical side of the court you call "left" does not matter: naming
+    it consistently the other way round produces a mirrored court, and a
+    mirror preserves every distance, so a distance metric is unaffected.
+
+    What does matter is that the two "left" names sit on one long side of the
+    lane and the two "right" names on the other. Mixing them — say, taking
+    `lane_baseline_left` from the far side and `free_throw_left` from the near
+    side — makes the quadrilateral cross itself, and the homography fitted to
+    it is geometric nonsense that can still report a small residual.
+
+    Walking the four corners in lane order must therefore trace a simple,
+    convex quadrilateral: every turn bends the same way. A crossed order
+    reverses one of them.
+    """
+    if not all(name in keypoints for name in LANE_CYCLE):
+        return None
+
+    points = [tuple(map(float, keypoints[name])) for name in LANE_CYCLE]
+    signs = []
+    for i in range(4):
+        ax, ay = points[i]
+        bx, by = points[(i + 1) % 4]
+        cx, cy = points[(i + 2) % 4]
+        cross = (bx - ax) * (cy - by) - (by - ay) * (cx - bx)
+        signs.append(cross)
+
+    if any(abs(value) < 1e-12 for value in signs):
+        return (
+            "Three of the lane corners are in a straight line, so they cannot "
+            "define a rectangle. Check they are on the four distinct corners."
+        )
+    if not (all(v > 0 for v in signs) or all(v < 0 for v in signs)):
+        return (
+            "The lane corners cross over each other. The two 'left' names must "
+            "be the two corners along one long side of the lane, and the two "
+            "'right' names the other side — mixing sides twists the shape. "
+            "Which side you call left does not matter; using the other one "
+            "consistently just mirrors the court, and distances are unchanged."
+        )
+    return None
+
+
 def parse_keypoints(mapping: dict) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """Turn {landmark: [x_norm, y_norm]} into paired image/court arrays.
 

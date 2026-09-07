@@ -61,6 +61,7 @@ from pipeline.court_region import (
 )
 from pipeline.court_geometry import (
     COURT_LANDMARKS,
+    lane_orientation_problem,
     COURT_LENGTH_FT,
     COURT_WIDTH_FT,
     MIN_LANDMARKS,
@@ -1113,7 +1114,10 @@ with tabs[4]:
                 sorted(COURT_LANDMARKS),
                 key="cal_click_target",
                 help="Pick the landmark, then click where it sits in the "
-                "frame below. Clicking again moves it.",
+                "frame below. Clicking again moves it. Left vs right: the two "
+                "'left' names go on one long side of the lane and the two "
+                "'right' names on the other. Which side you pick does not "
+                "matter — being consistent does.",
             )
             def _normalized(payload):
                 """Click position as a 0-1 fraction of the rendered image.
@@ -1236,6 +1240,10 @@ with tabs[4]:
                     canvas, name, (px + 8, py - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1,
                 )
+
+            twisted = lane_orientation_problem(parsed_kp)
+            if twisted:
+                st.error(twisted)
 
             homography = None
             per_point = None
