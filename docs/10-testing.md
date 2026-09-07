@@ -51,8 +51,10 @@ table when its filters rejected everything.
 streamlit run app.py
 ```
 
-On Windows use `run_viewer.bat` (double-clickable, needs no activation) or
-`.venv\Scripts\python.exe -m streamlit run app.py`.
+On Windows use the launcher — `.\run_viewer.bat` in PowerShell, which
+requires the `.\`, or `run_viewer.bat` in Command Prompt. It needs no
+activation and can be double-clicked. Otherwise
+`.venv\Scripts\python.exe -m streamlit run app.py` works in either shell.
 
 Pick the game in the sidebar. The sidebar also shows which stages have run.
 

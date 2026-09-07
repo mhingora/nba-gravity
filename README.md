@@ -213,14 +213,24 @@ streamlit run app.py
 ```
 
 On Windows, `streamlit` is only on `PATH` while the venv is activated, and
-`cd F:\...` from a `C:` prompt does not change drive. Either use the
-launcher, which needs neither and can be double-clicked:
+`cd F:\...` from a `C:` prompt does not change drive. The launcher needs
+neither, and can also be double-clicked in Explorer.
+
+In **PowerShell** — the `.\` is required, since PowerShell does not run
+commands from the current directory:
+
+```bash
+.\run_viewer.bat
+```
+
+In **Command Prompt**:
 
 ```bash
 run_viewer.bat
 ```
 
-or call the venv's interpreter directly, which works from any directory:
+Or call the venv's interpreter directly, which works from any directory in
+either shell:
 
 ```bash
 .venv\Scripts\python.exe -m streamlit run app.py
