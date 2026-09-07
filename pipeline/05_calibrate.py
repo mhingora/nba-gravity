@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -40,6 +41,9 @@ from pipeline.court_geometry import (
     parse_keypoints,
 )
 from pipeline.court_region import load_profile
+
+# The viewer stamps the profile description when landmarks are saved.
+ANNOTATION_STAMP = re.compile(r"\[landmarks annotated on (\S+) frame (\d+)\]")
 
 
 def calibrate_angle(
@@ -77,6 +81,12 @@ def main() -> int:
         "until something classifies camera angles.",
     )
     parser.add_argument(
+        "--allow-foreign-landmarks",
+        action="store_true",
+        help="Calibrate even when the landmarks were annotated on a different "
+        "game. Only sensible when the two really do share a camera framing.",
+    )
+    parser.add_argument(
         "--max-error-px",
         type=float,
         default=None,
@@ -100,6 +110,35 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+
+    # A homography describes one camera framing. Tracker settings and the
+    # court polygon travel between games happily; landmarks do not, because
+    # pan and zoom move the court in the frame. Annotating for one clip and
+    # calibrating another produces a confident, wrong homography — which is
+    # exactly what happened once, and cost a session to diagnose.
+    stamp = ANNOTATION_STAMP.search(profile.get("description", "") or "")
+    if stamp and stamp.group(1) != args.game_id:
+        message = (
+            f"[{'warn' if args.allow_foreign_landmarks else 'error'}] profile "
+            f"'{args.court_profile}' was annotated on {stamp.group(1)} frame "
+            f"{stamp.group(2)}, not {args.game_id}. A homography only "
+            "describes the framing it was annotated on."
+        )
+        print(message, file=sys.stderr)
+        if not args.allow_foreign_landmarks:
+            print(
+                "        Re-annotate on this game in the viewer, or pass "
+                "--allow-foreign-landmarks if the framing really is shared.",
+                file=sys.stderr,
+            )
+            return 1
+    elif not stamp:
+        print(
+            "[warn] this profile predates annotation stamping, so the frame "
+            "its landmarks came from is unknown. Re-save them in the viewer "
+            "to record it.",
+            file=sys.stderr,
+        )
 
     try:
         info = video_info(find_video(args.game_id))
