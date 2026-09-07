@@ -219,9 +219,17 @@ downstream.
 
 - Real footage has been processed, but only one possession (465 frames of
   7,786). Nothing has run at scale.
-- No camera angle has been annotated for Stage 5, so no homography exists
-  for real footage and every distance is still in pixels. The maths is
-  verified against a constructed transform; the annotation is a human step.
+- One camera angle is now calibrated (S_N3_HD shot 11, six landmarks, rms
+  1.3px), validated by projecting tracked players: 52 of 52 land on the court
+  with realistic spacing. Other angles and other clips are still uncalibrated.
+
+**Per-landmark reprojection error can point at the wrong landmark.** On the
+first real annotation one landmark carried the wrong name — a corner-three
+mark labelled for the opposite sideline — and the fit contorted to satisfy it,
+so *it* reported 0.3px while correctly placed landmarks reported over 600px.
+Refitting without each landmark in turn found it immediately (391px with it,
+1.3px without), and `worst_landmark()` now does that automatically whenever a
+fit looks bad.
 - **One homography per camera angle is an approximation this footage
   violates.** The spec assumes a camera position repeats across shots and
   suggests recomputing only if a shot looks off. Measured on shot 11 of the

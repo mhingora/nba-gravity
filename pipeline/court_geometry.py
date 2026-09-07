@@ -206,6 +206,50 @@ def to_court_feet(matrix: np.ndarray, pixel_points: np.ndarray) -> np.ndarray:
     return _apply(matrix, np.asarray(pixel_points, dtype=np.float64))
 
 
+def worst_landmark(
+    keypoints: dict, frame_width: float, frame_height: float
+) -> tuple[str, float, float] | None:
+    """Find the landmark whose removal most improves the fit.
+
+    Per-landmark reprojection error is a poor guide to which landmark is
+    mislabelled, and can point the wrong way entirely. A misnamed point drags
+    the whole homography toward itself, so the fit ends up satisfying the
+    impostor and missing the honest landmarks: on a real case the mislabelled
+    one reported 0.3px while correctly placed ones reported over 600px.
+
+    Refitting without each landmark in turn does not have that problem. If one
+    removal collapses the error, that landmark is the one to look at.
+
+    Returns (name, rms_with, rms_without), or None when nothing stands out.
+    """
+    names = list(keypoints)
+    if len(names) <= MIN_LANDMARKS:
+        # Dropping one would leave too few to fit, and with exactly four the
+        # fit is exact anyway, so there is no signal to find.
+        return None
+
+    image_all, court_all, ordered = parse_keypoints(keypoints)
+    _, _, full = compute_homography(image_all, court_all, frame_width, frame_height)
+
+    best_name, best_rms = None, None
+    for name in ordered:
+        subset = {k: v for k, v in keypoints.items() if k != name}
+        try:
+            image, court, _ = parse_keypoints(subset)
+            _, _, without = compute_homography(image, court, frame_width, frame_height)
+        except ValueError:
+            continue
+        if best_rms is None or without < best_rms:
+            best_name, best_rms = name, without
+
+    if best_name is None:
+        return None
+    # A fivefold improvement is far more than dropping a merely noisy point,
+    # which typically changes the residual by a few percent.
+    if full > 5.0 and best_rms * 5.0 < full:
+        return best_name, full, best_rms
+    return None
+
 def known_distance_checks(
     matrix: np.ndarray,
     image_points_norm: np.ndarray,

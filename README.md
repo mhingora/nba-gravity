@@ -53,12 +53,14 @@ generic weights, skipped otherwise.
 
 ## Status
 
-**No milestone is closed yet.** Stages 0-4 run on real broadcast footage —
-shot segmentation, detection, tracking, team classification and ball
-possession. Stage 5 (court calibration) is implemented and its maths is
-verified, but no camera angle has been annotated yet, so distances are still
-in pixels rather than feet. Stage 6 is a stub. There is no gravity number
-yet, and the research question above is unanswered.
+**Stages 0-5 run on real broadcast footage** — shot segmentation, detection,
+tracking, team classification, ball possession and court calibration. One
+camera angle is calibrated to 1.3px reprojection error, validated by
+projecting tracked players onto the court, so positions are now in feet rather
+than pixels.
+
+Milestones 1 and 2 remain open on their own terms, Stage 6 is a stub, and no
+gravity number exists yet — the research question above is still unanswered.
 
 Detection and tracking have run on **one hand-picked possession** — 465 of
 7,786 frames, about 6% of a single clip. Shot segmentation has run over full

@@ -11,7 +11,7 @@ building the whole pipeline blind before seeing any output.
 | 2 — Shot boundary segmentation | **Open.** Runs over full clips (47 and 32 shots). Never checked by eye against the video, which is its "done when". |
 | 3 — Team classification | **Implemented.** 23 of 25 tracks on the test possession land in the visually correct kit cluster; silhouette 0.36. Viewer Tab 3 renders the crop grid for spot-checking. |
 | 4 — Ball possession | **Implemented.** On the test possession the handler is visually correct wherever one is assigned; 46% of frames have a handler, and the limit is ball detection coverage, not the heuristic. |
-| 5 — Court calibration | **Implemented, unannotated.** Homography, reprojection error and known-distance checks are built and verified against a constructed transform; the annotation UI is in viewer Tab 5. No real camera angle has been annotated yet — that is a human step. |
+| 5 — Court calibration | **Done for one camera angle.** Six landmarks annotated on S_N3_HD shot 11: rms reprojection error 1.3px, worst known distance off by 0.07ft. Independently validated — 52 of 52 projected player positions land on the court, spaced 3.0-6.7ft apart. Accurate near the annotated frame only; the camera pans within a shot. |
 | 6 — Jersey OCR / identity | Not started. Measured constraint: player boxes are ~218px tall at 1080p, leaving roughly 76px of torso for OCR. |
 | 7 — First end-to-end run | Blocked on 3-6. |
 | 8-9 — Validation, scale-up | Blocked on 7. |

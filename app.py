@@ -69,6 +69,7 @@ from pipeline.court_geometry import (
     known_distance_checks,
     parse_keypoints,
     to_court_feet,
+    worst_landmark,
 )
 try:
     from streamlit_image_coordinates import streamlit_image_coordinates
@@ -1323,11 +1324,25 @@ with tabs[4]:
                         "real residual, and trust the radar until you do."
                     )
                 elif rms > 20:
-                    st.warning(
-                        "High reprojection error - at least one landmark is "
-                        "probably misplaced. The worst offender is in the table "
-                        "below."
-                    )
+                    culprit = worst_landmark(parsed_kp, cal_w, cal_h)
+                    if culprit:
+                        name, with_it, without_it = culprit
+                        st.warning(
+                            f"High reprojection error. Removing **{name}** drops "
+                            f"it from {with_it:.0f}px to {without_it:.1f}px, so "
+                            f"that landmark is very likely on the wrong spot or "
+                            "carrying the wrong name — check its left/right "
+                            "first. Note the per-landmark table below can point "
+                            "the wrong way: a mislabelled point drags the fit "
+                            "toward itself and ends up with a small error of "
+                            "its own."
+                        )
+                    else:
+                        st.warning(
+                            "High reprojection error - at least one landmark is "
+                            "probably misplaced. The worst offender is in the "
+                            "table below."
+                        )
             else:
                 st.info(
                     str(len(parsed_kp)) + " landmark(s) placed; "

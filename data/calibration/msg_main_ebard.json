@@ -1,30 +1,30 @@
 {
   "name": "msg_main_ebard",
-  "description": "Madison Square Garden main wide camera with a basketball-trained detector (E-BARD BODD_yolov8n). No court polygon: the detector already ignores the crowd, and the polygon fitted for COCO clips real players. Tracker settings are for the trackers-package ByteTrack, which beat sv-bytetrack, OC-SORT and BoT-SORT on this footage. [landmarks annotated on S_N3 frame 2601]",
+  "description": "Madison Square Garden main wide camera with a basketball-trained detector (E-BARD BODD_yolov8n). No court polygon: the detector already ignores the crowd, and the polygon fitted for COCO clips real players. Tracker settings are for the trackers-package ByteTrack, which beat sv-bytetrack, OC-SORT and BoT-SORT on this footage. [landmarks annotated on S_N3_HD frame 3329]",
   "court_keypoints": {
     "free_throw_left": [
-      0.481,
-      0.3608
+      0.5489,
+      0.6823
     ],
     "free_throw_right": [
-      0.531,
-      0.4247
-    ],
-    "lane_baseline_left": [
-      0.5857,
-      0.3331
+      0.6158,
+      0.5198
     ],
     "lane_baseline_right": [
-      0.6471,
-      0.381
+      0.2911,
+      0.4755
     ],
-    "free_throw_centre": [
-      0.5063,
-      0.3922
+    "lane_baseline_left": [
+      0.1867,
+      0.6299
     ],
-    "halfcourt_left": [
-      0.2673,
-      0.3589
+    "baseline_right_corner": [
+      0.3782,
+      0.3412
+    ],
+    "corner_three_right": [
+      0.3651,
+      0.3641
     ]
   },
   "backend": "bytetrack",
