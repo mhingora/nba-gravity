@@ -1095,33 +1095,59 @@ with tabs[4]:
                 help="Pick the landmark, then click where it sits in the "
                 "frame below. Clicking again moves it.",
             )
+            def _normalized(payload):
+                """Click position as a 0-1 fraction of the rendered image.
+
+                The component returns the size it actually rendered at, which
+                is what to divide by — the width we asked for may not have
+                survived the browser fitting the image to its column.
+                """
+                width = float(payload.get("width") or 0.0)
+                height = float(payload.get("height") or 0.0)
+                if not width or not height:
+                    return None
+                return payload["x"] / width, payload["y"] / height
+
+            # Clicking the overview only moves the magnifier. Placing a
+            # landmark there would be guesswork: at browser scale a lane
+            # corner is about two pixels across.
+            overview = st.session_state.get("cal_click_overview")
+            if overview and overview != st.session_state.get("cal_overview_handled"):
+                st.session_state["cal_overview_handled"] = overview
+                spot = _normalized(overview)
+                if spot:
+                    st.session_state["cal_zoom_centre"] = spot
+                    st.rerun()
+
             pending = st.session_state.get("cal_click")
             last = st.session_state.get("cal_click_handled")
             if pending and pending != last:
                 st.session_state["cal_click_handled"] = pending
-                # Normalise against the size the component actually rendered,
-                # which it returns with the click. Dividing by the width we
-                # asked for would silently skew every landmark if the browser
-                # scaled the image to fit its column.
-                shown_w = float(pending.get("width") or 0.0)
-                shown_h = float(pending.get("height") or 0.0)
-                nx = pending["x"] / shown_w if shown_w else 0.0
-                ny = pending["y"] / shown_h if shown_h else 0.0
-                st.session_state["cal_click_debug"] = (
-                    f"click ({pending['x']:.0f}, {pending['y']:.0f}) in a "
-                    f"{shown_w:.0f}x{shown_h:.0f} rendered image "
-                    f"-> ({nx:.4f}, {ny:.4f}) normalized"
-                )
-                target = st.session_state.get("cal_click_target")
-                existing = st.session_state.get("cal_text", "")
-                kept = [
-                    line
-                    for line in existing.splitlines()
-                    if line.strip() and line.split()[0] != target
-                ]
-                kept.append(f"{target} {nx:.4f} {ny:.4f}")
-                st.session_state["cal_text"] = "\n".join(kept)
-                st.rerun()
+                spot = _normalized(pending)
+                if spot:
+                    # The magnified view shows a window of the frame, so a
+                    # click in it is an offset within that window, not within
+                    # the whole frame.
+                    zoom_x, zoom_y, zoom_w, zoom_h = st.session_state.get(
+                        "cal_zoom_window", (0.0, 0.0, 1.0, 1.0)
+                    )
+                    nx = zoom_x + spot[0] * zoom_w
+                    ny = zoom_y + spot[1] * zoom_h
+                    st.session_state["cal_click_debug"] = (
+                        f"click ({pending['x']:.0f}, {pending['y']:.0f}) in a "
+                        f"{pending.get('width', 0):.0f}x{pending.get('height', 0):.0f} "
+                        f"magnified view -> ({nx:.4f}, {ny:.4f}) in the frame"
+                    )
+                    target = st.session_state.get("cal_click_target")
+                    existing = st.session_state.get("cal_text", "")
+                    kept = [
+                        line
+                        for line in existing.splitlines()
+                        if line.strip() and line.split()[0] != target
+                    ]
+                    kept.append(f"{target} {nx:.4f} {ny:.4f}")
+                    st.session_state["cal_text"] = "\n".join(kept)
+                    st.rerun()
 
         if "cal_text" not in st.session_state:
             st.session_state["cal_text"] = "\n".join(
@@ -1130,9 +1156,16 @@ with tabs[4]:
             )
         cal_raw = st.text_area("Landmarks", key="cal_text", height=170)
 
-        grid_cols = st.columns([1, 2])
+        grid_cols = st.columns([1, 1, 2])
         show_grid = grid_cols[0].checkbox(
             "Show coordinate grid", value=True, key="cal_grid"
+        )
+        zoom_factor = grid_cols[1].select_slider(
+            "Magnifier",
+            options=[2, 3, 4, 6, 8],
+            value=4,
+            key="cal_zoom",
+            help="How far to magnify the region you clicked in the overview.",
         )
         grid_step = grid_cols[1].select_slider(
             "Grid spacing",
@@ -1244,23 +1277,79 @@ with tabs[4]:
                     "by clicking instead of typing."
                 )
             else:
+                centre_x, centre_y = st.session_state.get(
+                    "cal_zoom_centre", (0.5, 0.5)
+                )
+                window = 1.0 / zoom_factor
+                # Keep the window inside the frame, so the magnifier never
+                # shows blank space and the mapping stays exact.
+                win_x = min(max(centre_x - window / 2, 0.0), 1.0 - window)
+                win_y = min(max(centre_y - window / 2, 0.0), 1.0 - window)
+                st.session_state["cal_zoom_window"] = (win_x, win_y, window, window)
+
+                overview_img = canvas.copy()
+                cv2.rectangle(
+                    overview_img,
+                    (int(win_x * cal_w), int(win_y * cal_h)),
+                    (int((win_x + window) * cal_w), int((win_y + window) * cal_h)),
+                    (0, 128, 255), 3,
+                )
                 streamlit_image_coordinates(
-                    bgr_to_rgb(canvas),
+                    bgr_to_rgb(overview_img),
                     width=CLICK_DISPLAY_WIDTH,
-                    key="cal_click",
+                    key="cal_click_overview",
                 )
                 st.caption(
-                    "Click to place the landmark selected above. The cross "
-                    "should land exactly where you clicked - if it does not, "
-                    "the coordinates are in the text box and can be nudged by "
-                    "hand. The grid labels should run from 0.05 to 0.95 across "
-                    "the full width; if they stop short, the frame is being "
-                    "clipped and part of the court is unreachable."
+                    "Overview - click to move the orange magnifier box. "
+                    "Landmarks are not placed from here: at this scale a lane "
+                    "corner is about two pixels across."
                 )
+
+                x0, y0 = int(win_x * cal_w), int(win_y * cal_h)
+                x1, y1 = int((win_x + window) * cal_w), int((win_y + window) * cal_h)
+                crop = cal_frame[y0:y1, x0:x1].copy()
+                if crop.size:
+                    # Upscale to a fixed width so the click target stays large
+                    # whatever magnification is chosen.
+                    target_w = 1100
+                    crop = cv2.resize(
+                        crop,
+                        (target_w, int(crop.shape[0] * target_w / crop.shape[1])),
+                        interpolation=cv2.INTER_CUBIC,
+                    )
+                    crop_h, crop_w = crop.shape[:2]
+                    cv2.line(crop, (crop_w // 2 - 18, crop_h // 2),
+                             (crop_w // 2 + 18, crop_h // 2), (0, 128, 255), 1)
+                    cv2.line(crop, (crop_w // 2, crop_h // 2 - 18),
+                             (crop_w // 2, crop_h // 2 + 18), (0, 128, 255), 1)
+
+                    for name, point in parsed_kp.items():
+                        if not (win_x <= point[0] <= win_x + window
+                                and win_y <= point[1] <= win_y + window):
+                            continue
+                        px = int((point[0] - win_x) / window * crop_w)
+                        py = int((point[1] - win_y) / window * crop_h)
+                        colour = (0, 255, 0) if name == click_landmark else (0, 255, 255)
+                        cv2.drawMarker(crop, (px, py), colour, cv2.MARKER_CROSS, 34, 2)
+                        # Dark backing first, so the label reads over pale wood.
+                        for thickness, shade in ((4, (20, 20, 20)), (1, colour)):
+                            cv2.putText(crop, name, (px + 12, py - 12),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.62,
+                                        shade, thickness, cv2.LINE_AA)
+
+                    streamlit_image_coordinates(
+                        bgr_to_rgb(crop),
+                        width=CLICK_DISPLAY_WIDTH,
+                        key="cal_click",
+                    )
+                    st.caption(
+                        f"Magnified {zoom_factor}x - click here to place "
+                        f"`{click_landmark}`. The landmark being placed is "
+                        "green; others in view are yellow."
+                    )
                 if st.session_state.get("cal_click_debug"):
                     # The raw payload, because a mis-scaled click is otherwise
-                    # only visible much later as a wrong homography. The
-                    # rendered size here should match the image you see.
+                    # only visible much later as a wrong homography.
                     st.caption(f"last {st.session_state['cal_click_debug']}")
 
             radar_col, table_col = st.columns([1, 2])
