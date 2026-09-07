@@ -1163,22 +1163,63 @@ with tabs[4]:
                         f"magnified view -> ({nx:.4f}, {ny:.4f}) in the frame"
                     )
                     target = st.session_state.get("cal_click_target")
-                    existing = st.session_state.get("cal_text", "")
+                    existing = st.session_state.get("cal_landmarks", "")
                     kept = [
                         line
                         for line in existing.splitlines()
                         if line.strip() and line.split()[0] != target
                     ]
                     kept.append(f"{target} {nx:.4f} {ny:.4f}")
-                    st.session_state["cal_text"] = "\n".join(kept)
+                    updated = "\n".join(kept)
+                    # Both: the mirror survives a rerun that never reaches the
+                    # text area, and the widget key is what the box displays.
+                    st.session_state["cal_landmarks"] = updated
+                    st.session_state["cal_text"] = updated
                     st.rerun()
 
-        if "cal_text" not in st.session_state:
-            st.session_state["cal_text"] = "\n".join(
+        # `cal_landmarks` is the durable copy. It is deliberately not a widget
+        # key: Streamlit garbage-collects widget state for widgets that a run
+        # did not instantiate, and the click handlers above rerun before the
+        # text area exists, which used to drop the edits and reload the
+        # profile's landmarks over them.
+        if "cal_landmarks" not in st.session_state:
+            st.session_state["cal_landmarks"] = "\n".join(
                 name + " " + format(pt[0], "g") + " " + format(pt[1], "g")
                 for name, pt in stored_kp.items()
             )
+        if "cal_text" not in st.session_state:
+            st.session_state["cal_text"] = st.session_state["cal_landmarks"]
+
+        # These write session_state from a callback, which runs before the
+        # text area is instantiated on the next rerun — assigning to a live
+        # widget's key raises.
+        def _reload_landmarks() -> None:
+            text = "\n".join(
+                name + " " + format(pt[0], "g") + " " + format(pt[1], "g")
+                for name, pt in stored_kp.items()
+            )
+            st.session_state["cal_landmarks"] = text
+            st.session_state["cal_text"] = text
+
+        def _clear_landmarks() -> None:
+            st.session_state["cal_landmarks"] = ""
+            st.session_state["cal_text"] = ""
+
+        edit_cols = st.columns([1, 1, 4])
+        edit_cols[0].button(
+            "Reload from profile", key="cal_reload", on_click=_reload_landmarks,
+            help="Discard what is in the box and load the profile's saved "
+            "landmarks.",
+        )
+        edit_cols[1].button(
+            "Clear", key="cal_clear", on_click=_clear_landmarks,
+            help="Empty the box, to annotate this game from scratch.",
+        )
+
         cal_raw = st.text_area("Landmarks", key="cal_text", height=170)
+        # Typing in the box is just as valid as clicking, so the mirror
+        # follows whatever the box now holds.
+        st.session_state["cal_landmarks"] = cal_raw
 
         grid_cols = st.columns([1, 1, 2])
         show_grid = grid_cols[0].checkbox(
