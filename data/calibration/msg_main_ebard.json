@@ -17,6 +17,14 @@
     "lane_baseline_right": [
       0.6471,
       0.381
+    ],
+    "free_throw_centre": [
+      0.5063,
+      0.3922
+    ],
+    "halfcourt_left": [
+      0.2673,
+      0.3589
     ]
   },
   "backend": "bytetrack",

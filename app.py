@@ -15,6 +15,7 @@ hidden, so the viewer grows alongside the roadmap.
 from __future__ import annotations
 
 import io
+import re
 import sys
 from pathlib import Path
 
@@ -1045,6 +1046,25 @@ with tabs[4]:
         # the shot narrows the slider to it and starts in the middle, which is
         # also where a single homography is most accurate — its error grows
         # with distance from the annotated frame as the camera pans.
+        # Landmarks describe one camera framing, but the profile is shared and
+        # the landmark box survives a change of game — so it is easy to load
+        # one clip's landmarks, switch game, and save them against another.
+        # The stamp records where they came from; say so loudly when it
+        # disagrees with the game now selected.
+        stamped = re.search(
+            r"\[landmarks annotated on (\S+) frame (\d+)\]",
+            cal_profile.get("description", "") or "",
+        )
+        if stamped and stamped.group(1) != game_id:
+            st.error(
+                f"This profile's landmarks were annotated on **{stamped.group(1)}** "
+                f"(frame {stamped.group(2)}), but **{game_id}** is selected. A "
+                "homography only describes the framing it was annotated on, so "
+                "these coordinates do not apply here. Clear the landmark box "
+                "below and place them again on this game, or switch the game "
+                f"in the sidebar back to {stamped.group(1)}."
+            )
+
         cal_shot = shot_selector("cal", shots)
         if cal_shot is None:
             cal_lo, cal_hi = 0, max(info.frame_count - 1, 0)
