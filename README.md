@@ -46,6 +46,23 @@ Every one of them associates on motion and geometry alone. Two players who
 swap positions mid-crossing are indistinguishable without appearance
 features, which is what closing the remaining gap requires.
 
+**Jersey OCR answers rarely, and is right when it does.** On the same
+possession, 5 of 25 tracks resolve a jersey number and **all 5 are correct**;
+the 12 tracks showing no legible number are correctly left null. Two tracks a
+human can read are missed. Getting there meant deleting three rules that
+looked reasonable:
+
+| Rule | Why it was wrong |
+|---|---|
+| Fold single-digit reads into a two-digit read containing them | The clearest track on the clip reads "2" ten times and "24" six times — the player wears **2**. The rule answered 24, and invented a number for a track with none. |
+| Strip leading zeros ("07" → 7) | It also turned seventeen confident "00" reads into "0", a different player. |
+| Trust OCR confidence | EasyOCR runs with a digit allowlist, so its decoder cannot answer "not a digit" — a jersey wordmark comes back as a digit at confidence 1.0. Six wrong numbers were accepted this way, several at 0.99+. |
+
+What actually separates a real read from noise is how many frames agree, so
+the bar is four agreeing reads out of 24 sampled frames and a strict majority
+of what survives. A wrong number attaches one player's name to another
+player's movement, so refusing is the cheaper error.
+
 Counter-intuitively, the court-polygon crowd filter built for the COCO
 detector *hurts* with a basketball detector: it was compensating for crowd
 detections that no longer happen, and it clips real players instead. Kept for
@@ -53,14 +70,15 @@ generic weights, skipped otherwise.
 
 ## Status
 
-**Stages 0-5 run on real broadcast footage** — shot segmentation, detection,
-tracking, team classification, ball possession and court calibration. One
-camera angle is calibrated to 1.3px reprojection error, validated by
-projecting tracked players onto the court, so positions are now in feet rather
-than pixels.
+**Stages 1-5 run on real broadcast footage** — shot segmentation, detection,
+tracking, team classification, ball possession, court calibration and jersey
+identity. One camera angle is calibrated to 1.3px reprojection error,
+validated by projecting tracked players onto the court, so positions are now
+in feet rather than pixels.
 
-Milestones 1 and 2 remain open on their own terms, Stage 6 is a stub, and no
-gravity number exists yet — the research question above is still unanswered.
+Milestones 1 and 2 remain open on their own terms, Stage 6 (aggregation) is a
+stub, and no gravity number exists yet — the research question above is still
+unanswered.
 
 Detection and tracking have run on **one hand-picked possession** — 465 of
 7,786 frames, about 6% of a single clip. Shot segmentation has run over full
@@ -94,17 +112,25 @@ nba-gravity/
 │   ├── common.py                 # paths, schemas, video IO (shared)
 │   ├── shot_boundaries.py        # Stage 0 cut detection
 │   ├── detector.py               # detector wrappers for Stage 1
+│   ├── team_clustering.py        # Stage 3A kit-colour clustering
+│   ├── jersey_ocr.py             # Stage 3B jersey OCR + majority vote
+│   ├── possession.py             # Stage 4 ball selection + handler logic
+│   ├── court_geometry.py         # Stage 5 landmarks + homography
 │   ├── 01_detect.py             # ✅ implemented
 │   ├── 02_track.py              # ✅ implemented
-│   ├── 03_identify.py           # stub
-│   ├── 04_ball_possession.py    # stub
-│   ├── 05_calibrate.py          # stub
+│   ├── 03_identify.py           # ✅ implemented (OCR behind --ocr)
+│   ├── 04_ball_possession.py    # ✅ implemented
+│   ├── 05_calibrate.py          # ✅ implemented
 │   └── 06_aggregate.py          # stub
 ├── tools/
-│   └── make_test_clip.py         # synthetic clip for smoke-testing
+│   ├── make_test_clip.py         # synthetic clip for smoke-testing
+│   └── verify.py                 # 45 checks, ground-truth + structural
 ├── outputs/
 │   ├── detections/
 │   ├── tracks/
+│   ├── identity/
+│   ├── possession/
+│   ├── calibration/
 │   └── metrics/
 └── analysis/                     # notebooks for exploring results
 ```
@@ -251,6 +277,29 @@ favours neither team become `other` — referees, coaches, anyone the detector
 picked up. Check the result in the viewer's Team Classification tab: the two
 crop groups should obviously be the two kits.
 
+Read jersey numbers too (Milestone 6). This is opt-in: it costs a second pass
+over the video and an OCR model load, and resolves a minority of tracks.
+
+```bash
+python pipeline/03_identify.py --game-id 0022500123 --ocr     --team light=NYK --team dark=SAS
+```
+
+`--team` says which cluster is which squad — colour can only tell you which
+kit is brighter — and looks names up in `data/rosters/{team_id}.json`. Without
+it numbers are still read, but no name is attached. A number with no roster
+entry is reported by name so you can fill the gap:
+
+```
+[stage 3] 5/25 track(s) resolved a jersey number, 2 matched a roster name
+[stage 3] no roster entry for: NYK #00, NYK #32, NYK #5
+```
+
+Every crop and its individual read is written to
+`outputs/identity/{game_id}_ocr.json` and shown in the viewer's Identity
+Resolution tab, which is where you check a number against the crops it came
+from. Most tracks resolving nothing is the designed outcome: a wrong number
+attaches one player's name to another player's movement.
+
 Then work out who has the ball each frame (Milestone 4):
 
 ```bash
@@ -296,7 +345,9 @@ python tools/verify.py
 Regenerates the synthetic clip, runs every implemented stage over it, and
 checks the result against answers known from how the clip was built — three
 cuts at fixed frames, ten players per frame, five per kit colour. Expect
-26/26 passed; exit code is 0 only if all of them do, so it works as a gate.
+45/45 passed; exit code is 0 only if all of them do, so it works as a gate.
+Those include the jersey-number voting rules, which are pure logic and are
+asserted against reads real footage produced — no video or OCR model needed.
 
 For real footage, where no ground truth exists:
 

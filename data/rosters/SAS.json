@@ -1,0 +1,9 @@
+{
+  "team_id": "SAS",
+  "season": "2025-26",
+  "note": "Partial. Only players whose surname is legible on a jersey in data/raw_video/S_N3_HD.mp4 are listed, because a roster that guesses is worse than one with gaps: an unlisted number resolves to a null player_name, an incorrect one silently mislabels a player. Fill in the rest of the squad from a box score before relying on name coverage.",
+  "players": {
+    "2": "Harper",
+    "30": "Champagnie"
+  }
+}

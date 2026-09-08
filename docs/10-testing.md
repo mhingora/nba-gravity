@@ -19,12 +19,14 @@ checks the output against answers that are known because the clip was built
 with them: three cuts at fixed frames, ten players per frame, five per kit
 colour. Exit code is 0 only if everything passes, so it works as a gate.
 
-Expect **32/32 passed**. Run it after any change to the pipeline; if a check
+Expect **45/45 passed**. Run it after any change to the pipeline; if a check
 that used to pass now fails, that change broke something.
 
 What it proves: schemas, shot segmentation, per-shot tracker resets, team
-clustering, possession plumbing. What it does **not** prove: anything about
-real footage. Detector recall, id stability through contact and clustering
+clustering, possession plumbing, the homography maths, and the jersey-number
+voting rules (which are pure logic, so they are asserted against the reads
+real footage produced without needing a video or an OCR model). What it does
+**not** prove: anything about real footage. Detector recall, id stability through contact and clustering
 accuracy on actual kits cannot be checked without ground truth, which the
 synthetic clip has and real video does not.
 
@@ -37,7 +39,9 @@ python tools/verify.py --game-id S_N3_HD --structural
 Skips ground truth and runs only the invariants that must hold for any
 footage: documented columns present, no tracker_id appearing twice in one
 frame, foot points at the bottom-centre of their box, possession referring to
-tracks that exist, confidences within 0-1.
+tracks that exist, confidences within 0-1, no player name without the number
+and team it was looked up from, and the OCR evidence file telling the same
+story as the identity table.
 
 This cannot tell you the output is *correct*. It tells you the tables are not
 malformed — which is worth knowing, because most bugs found so far were
@@ -176,6 +180,43 @@ residual. The tab checks for that crossing and refuses it.
   Check the radar at the start, middle and end of a shot rather than trusting
   one frame.
 
+### Tab 6 — Identity Resolution
+
+**Question: is a resolved number actually that player's number?**
+
+Jersey reading is opt-in, so this tab is empty until stage 3 has been run
+with it:
+
+```
+python pipeline/03_identify.py --game-id S_N3_HD --ocr     --team light=NYK --team dark=SAS
+```
+
+The `--team` flags say which colour cluster is which real squad — clustering
+can only tell you which kit is brighter. Without them numbers are still read,
+but no name can be looked up.
+
+- Pick a track. Resolved ones are listed first, unresolved after, each
+  labelled with its outcome so the failures are findable without opening them
+  one at a time.
+- The crop grid shows every frame OCR read, with what it read underneath.
+  This is the check: compare the number the vote produced against the number
+  visible in its own crops.
+- Tick **show crops that read nothing** on a track that failed. "18 blurred,
+  2 read nothing" is a different problem from "6 frames, 6 answers".
+- Use the **spot-check tally** as you go. It counts correct / wrong / should
+  have been null and prints a running precision. Precision is what matters,
+  not coverage: a wrong number attaches one player's name to another player's
+  movement and every gravity value derived from it is quietly false. If wrong
+  reads appear, raise `--min-agreement` rather than accepting them.
+- A number resolving on **two tracks of the same team** is flagged. Within a
+  team that is impossible, so it means one player was tracked twice — a
+  tracking problem surfacing here, not an OCR one.
+
+Expect most tracks to resolve nothing. On the test possession 5 of 25 resolve
+a number; the other 20 either show no number to the camera or are not players
+at all. That is the designed outcome, not a failure — see
+`04-identity-resolution.md`.
+
 ## 3. Per-run scorecards
 
 Every `02_track.py` run prints its own quality line, so the CLI answers the
@@ -185,7 +226,9 @@ same question as Tab 2 without opening anything:
 shot 11: 31 track(s), median 10/frame (79% of frames have 10+), longest 461f (99%), 6 track(s) span the shot - fragmenting - right count per frame, ids not persisting
 ```
 
-`03_identify.py` prints the team split and silhouette; `04_ball_possession.py`
+`03_identify.py` prints the team split and silhouette, and with `--ocr` also
+how many tracks resolved a number, how many matched a roster name, and which
+numbers have no roster entry so the gap can be filled in a minute; `04_ball_possession.py`
 prints the possession radius, the share of frames with a handler, and the
 number of spans. These are the numbers to quote when comparing two
 configurations — that is how the detector and tracker comparisons in the

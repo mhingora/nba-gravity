@@ -23,6 +23,7 @@ Exit code is 0 only if every check passes, so this is usable as a gate.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -40,6 +41,7 @@ from pipeline.common import (
     detections_path,
     identity_path,
     load_shots,
+    ocr_reads_path,
     possession_path,
     tracks_path,
 )
@@ -164,6 +166,25 @@ def structural_checks(checker: Checker, game_id: str) -> None:
             bool(confidence.between(0.0, 1.0).all()),
         )
 
+        numbers = identity["jersey_number"].dropna()
+        bad_numbers = [
+            n for n in numbers
+            if not (str(n).isdigit() and 1 <= len(str(n)) <= 2)
+        ]
+        checker.check(
+            "every jersey_number is a plausible one (0-99 or 00)",
+            not bad_numbers,
+            f"got {bad_numbers[:5]}",
+        )
+        named = identity[identity["player_name"].notna()]
+        checker.check(
+            "no name without the number and team it was looked up from",
+            bool(named["jersey_number"].notna().all())
+            and bool(named["team_id"].notna().all()),
+            f"{len(named)} named row(s)",
+        )
+        identity_ocr_checks(checker, game_id, identity)
+
     possession_file = possession_path(game_id)
     if possession_file.exists():
         possession = pd.read_parquet(possession_file)
@@ -187,6 +208,131 @@ def structural_checks(checker: Checker, game_id: str) -> None:
         checker.check("every handler is a real track", not bad, f"{len(bad)} phantom handlers")
         distances = possession["ball_distance_px"].dropna()
         checker.check("ball_distance_px is never negative", bool((distances >= 0).all()))
+
+
+def identity_ocr_checks(
+    checker: Checker, game_id: str, identity: pd.DataFrame
+) -> None:
+    """The OCR sidecar has to tell the same story as the identity table.
+
+    Only runs when `--ocr` was used. The viewer explains a track's number
+    from this file while the metric is computed from the parquet, so the two
+    disagreeing would mean the UI is vouching for something else's answer.
+    """
+    reads_file = ocr_reads_path(game_id)
+    if not reads_file.exists():
+        checker.note(
+            f"{game_id}: no OCR evidence — stage 3 was run without --ocr, so "
+            "jersey numbers are null by design"
+        )
+        return
+
+    evidence = json.loads(reads_file.read_text(encoding="utf-8"))
+    entries = evidence.get("tracks", [])
+    min_agreement = evidence.get("settings", {}).get("min_agreement", 0)
+
+    known = set(map(tuple, identity[["shot_id", "tracker_id"]].values))
+    orphans = [
+        (entry["shot_id"], entry["tracker_id"])
+        for entry in entries
+        if (entry["shot_id"], entry["tracker_id"]) not in known
+    ]
+    checker.check(
+        "OCR evidence refers only to tracks in the identity table",
+        not orphans,
+        f"{len(orphans)} orphans",
+    )
+
+    from_parquet = {
+        (int(row.shot_id), int(row.tracker_id)): row.jersey_number
+        for row in identity.itertuples()
+        if pd.notna(row.jersey_number)
+    }
+    from_json = {
+        (entry["shot_id"], entry["tracker_id"]): entry["jersey_number"]
+        for entry in entries
+        if entry["jersey_number"]
+    }
+    checker.check(
+        "the sidecar and the identity table agree on every number",
+        from_parquet == from_json,
+        f"{len(from_parquet)} in parquet vs {len(from_json)} in json",
+    )
+    under_threshold = [
+        entry["tracker_id"]
+        for entry in entries
+        if entry["jersey_number"] and entry["agreeing"] < min_agreement
+    ]
+    checker.check(
+        f"no number was accepted on fewer than {min_agreement} agreeing reads",
+        not under_threshold,
+        f"tracks {under_threshold[:5]}",
+    )
+    unsupported = [
+        entry["tracker_id"]
+        for entry in entries
+        if entry["jersey_number"]
+        and entry["counts"].get(entry["jersey_number"], 0) != entry["agreeing"]
+    ]
+    checker.check(
+        "each accepted number's tally matches the reads behind it",
+        not unsupported,
+        f"tracks {unsupported[:5]}",
+    )
+
+
+def jersey_ocr_checks(checker: Checker) -> None:
+    """The voting rules, asserted on the reads real footage actually produced.
+
+    No video and no OCR model needed — this is the decision logic on its own,
+    and each case here is a bug that was live at some point.
+    """
+    from collections import Counter
+
+    from pipeline.jersey_ocr import (
+        DEFAULT_MIN_AGREEMENT,
+        build_team_map,
+        normalise_read,
+        vote,
+    )
+
+    checker.check("'00' survives as a number of its own", normalise_read("00") == "00")
+    checker.check("'07' is read as 7", normalise_read("07") == "7")
+    checker.check("'330' is rejected as impossible", normalise_read("330") is None)
+    checker.check("empty text is rejected", normalise_read("") is None)
+
+    # Track 5 of the test possession: Harper, who wears 2. An earlier version
+    # folded the eight "2" reads into the six "24" reads and answered 24.
+    number, agreeing, total = vote(Counter({"2": 8, "24": 6}))
+    checker.check(
+        "a plurality of single-digit reads wins over a two-digit rival",
+        (number, agreeing, total) == ("2", 8, 14),
+        f"got {number!r} with {agreeing}/{total}",
+    )
+    checker.check(
+        "three agreeing reads are not enough",
+        vote(Counter({"1": 3}))[0] is None,
+    )
+    checker.check(
+        f"{DEFAULT_MIN_AGREEMENT} agreeing reads are enough",
+        vote(Counter({"1": DEFAULT_MIN_AGREEMENT}))[0] == "1",
+    )
+    checker.check(
+        "a tie resolves to nothing rather than a coin flip",
+        vote(Counter({"1": 5, "0": 5}))[0] is None,
+    )
+    checker.check("no reads means no number", vote(Counter()) == (None, 0, 0))
+
+    checker.check(
+        "team mapping parses cluster=TEAM",
+        build_team_map(["light=NYK", "dark=SAS"]) == {"light": "NYK", "dark": "SAS"},
+    )
+    malformed = False
+    try:
+        build_team_map(["NYK"])
+    except ValueError:
+        malformed = True
+    checker.check("a malformed --team is refused", malformed)
 
 
 def ground_truth_checks(checker: Checker) -> None:
@@ -386,6 +532,9 @@ def main() -> int:
 
         print("\nChecking stage 5 homography maths")
         homography_checks(checker)
+
+        print("\nChecking stage 3 jersey-number voting")
+        jersey_ocr_checks(checker)
 
     print(f"\nChecking structural invariants for {args.game_id}")
     structural_checks(checker, args.game_id)

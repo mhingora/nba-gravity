@@ -73,6 +73,64 @@ frames in the final metric if `identity_confidence > 0.6`. Tune this
 threshold empirically by spot-checking a sample of accepted vs. rejected
 tracks against the actual broadcast.
 
+## What the implementation measured
+
+Part B is built (`pipeline/jersey_ocr.py`, run with `03_identify.py --ocr`).
+The thresholds above were written as guesses; these are what replaced them
+after checking against footage. Method: sample each track's 24 largest
+frames, then read every crop by eye to establish truth before looking at what
+OCR said. Of 17 tracks on the test possession, 5 carried a legible number, 12
+carried none, and 2 more were legible to a human but never to OCR.
+
+| Setting | Spec's guess | Measured | Why |
+|---------|--------------|----------|-----|
+| Agreeing reads | 3 | **4** | Three agreeing reads accepted a "1" for a player whose number was never visible. No true number was read fewer than four times. |
+| OCR confidence | not specified | **0.80** | EasyOCR is given a digit allowlist, so its decoder *cannot* return "not a digit" — a jersey wordmark comes back as a digit at confidence 1.0. |
+| Winner's share | not specified | **> 50%** of reads kept | Refuses a track that cannot make up its mind, instead of answering by a hair. |
+| Upscale before reading | not specified | **4x cubic** | Raised the per-crop hit rate from 8% to 28%. |
+
+Three plausible-looking rules that turned out to be wrong:
+
+1. **Folding fragments into longer reads.** OCR often catches half a
+   two-digit number, so single-digit reads were attributed to a two-digit
+   read containing them. Track 5 reads "2" ten times and "24" six times — and
+   the player is Harper, who wears **2**. The rule turned the clearest
+   evidence on the clip into a wrong answer and invented a number for a track
+   that had none. Removed; a plain majority is both simpler and more accurate.
+2. **Stripping leading zeros.** Turning "07" into "7" also turned seventeen
+   confident "00" reads into "0" — a different player. Zeros are now stripped
+   only when a non-zero digit follows.
+3. **Trusting confidence over volume.** Confidence alone accepted six wrong
+   numbers, several at 0.99+. What separates signal from noise is how many
+   frames agree, not how sure any one frame is.
+
+Accuracy on the test possession: **5 answered, 5 correct, 12 correctly
+refused, 2 missed.** That is the trade this spec asks for. A wrong number
+attaches one player's name to another player's movement, and every gravity
+value derived from it is quietly false, so refusing is the cheaper error.
+
+Both missed tracks are the same player (#11, whose "11" reads as a single
+"1"), tracked twice because the tracker lost him mid-possession. Repeated
+digits are the known weak spot.
+
+### `identity_confidence` in practice
+
+Two things to know before using it as a filter:
+
+- With `--ocr`, a track that resolved no number scores 0, because the formula
+  multiplies by frame agreement. Only 5 of 25 tracks on the test possession
+  score above zero. **Gravity geometry needs the team label, not the name**,
+  so Stage 6 must not gate defender selection on this column — gate it on
+  `team_id` instead, and use `identity_confidence` only where a *named*
+  player is required.
+- Without `--ocr` there is no agreement term at all, so the column reports a
+  team-only proxy instead. The number is therefore not comparable between the
+  two modes.
+- The spec suggests filtering at `> 0.6`. That is unreachable on this
+  footage: the team-cluster silhouette is 0.36, which caps the product at
+  0.36 even for a unanimous OCR read. Any threshold has to be set relative to
+  the silhouette the run actually achieved.
+
 ## Filling gaps across a game
 
 Because identity resolves per-track (i.e. per camera shot) rather than once

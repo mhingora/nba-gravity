@@ -3,13 +3,17 @@
 All tabular outputs are parquet, partitioned by `game_id`. Reference tables
 (rosters, calibration points) are hand-maintained JSON/CSV.
 
-> **Implementation status.** The detections, shots and tracks schemas below are
-> implemented and written by `01_detect.py` / `02_track.py`. Identity,
-> calibration, possession and metrics are specs only — no code writes them yet.
-> Path helpers for every artifact live in `pipeline/common.py`, which is the
-> single place that knows where things go; nothing else hardcodes a path.
+> **Implementation status.** Detections, shots, tracks, identity, possession
+> and calibration are implemented and written by stages 1-5. Metrics are still
+> a spec — no code writes them yet. Path helpers for every artifact live in
+> `pipeline/common.py`, which is the single place that knows where things go;
+> nothing else hardcodes a path.
 
-## `data/rosters/{team_id}_{season}.json`
+## `data/rosters/{team_id}.json`
+
+One file per team, with the season inside it rather than in the filename — a
+run names a team on the command line (`--team dark=SAS`), and requiring the
+season there would mean retyping a fact the file already states.
 
 ```json
 {
@@ -112,6 +116,47 @@ per frame.
 
 `player_name` being null is expected and fine — downstream geometry stages do
 not depend on it. Only the final per-player aggregation needs it.
+
+`jersey_number` is a **string**, not an integer: "00" and "0" are different
+players, and casting to int would merge them.
+
+`identity_confidence` answers "how sure are we *which player* this is", so a
+track with no number scores 0 even when its team is obvious. Stage 6 should
+select defenders on `team_id` and use this column only where a named player is
+required — see `04-identity-resolution.md`.
+
+## `outputs/identity/{game_id}_ocr.json`
+
+Written alongside the identity table when stage 3 runs with `--ocr`. The
+parquet says what each track resolved to; this says why, so the viewer can
+show a failed track's crops next to what OCR made of them without re-running
+OCR itself.
+
+```json
+{
+  "game_id": "S_N3_HD",
+  "settings": {
+    "samples_per_track": 24, "min_agreement": 4, "min_winner_share": 0.5,
+    "min_ocr_confidence": 0.8, "min_sharpness": 40.0
+  },
+  "tracks": [
+    {
+      "shot_id": 11, "tracker_id": 5,
+      "jersey_number": "2", "agreeing": 8, "total_reads": 14,
+      "counts": {"2": 8, "24": 6},
+      "samples": [
+        {"frame_idx": 3101, "status": "read", "sharpness": 900.7, "reads": ["24"]},
+        {"frame_idx": 3140, "status": "blurred", "sharpness": 12.4}
+      ]
+    }
+  ]
+}
+```
+
+`samples` keeps every frame that was tried, including the ones that produced
+nothing: "18 blurred, 2 read nothing" is a different diagnosis from "6 frames,
+6 different answers". `status` is one of `read`, `nothing_legible`, `blurred`
+or `no_crop`.
 
 ## `data/calibration/{name}.json` (hand-maintained)
 

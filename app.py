@@ -39,6 +39,7 @@ from pipeline.common import (
     load_shots,
     read_frame,
     identity_path,
+    ocr_reads_path,
     possession_path,
     shot_diffs_path,
     tracks_path,
@@ -76,6 +77,7 @@ try:
 except ImportError:  # optional: the tab falls back to typing coordinates
     streamlit_image_coordinates = None
 
+from pipeline.jersey_ocr import prepare, torso_crop
 from pipeline.possession import possession_summary
 from pipeline.track_quality import EXPECTED_PLAYERS, summarize
 
@@ -111,6 +113,13 @@ def load_parquet(path_str: str, _mtime_key: float) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def load_shot_list(game_id: str, _mtime_key: float):
     return load_shots(game_id)
+
+
+@st.cache_data(show_spinner=False)
+def load_ocr_reads(path_str: str, _mtime_key: float) -> dict:
+    import json
+
+    return json.loads(Path(path_str).read_text(encoding="utf-8"))
 
 
 @st.cache_data(show_spinner=False, max_entries=64)
@@ -912,9 +921,10 @@ with tabs[2]:
         with st.expander("Identity table"):
             st.dataframe(identity, width="stretch", hide_index=True)
             st.caption(
-                "`jersey_number` and `player_name` stay null until Milestone 6 "
-                "(OCR). That is expected: only the final per-player "
-                "aggregation needs a name."
+                "`jersey_number` and `player_name` are null unless stage 3 was "
+                "run with `--ocr`, and stay null for any track OCR could not "
+                "read. That is expected: only the final per-player aggregation "
+                "needs a name. The Identity Resolution tab shows the reads."
             )
 with tabs[3]:
     st.subheader("Ball Possession")
@@ -1570,6 +1580,250 @@ with tabs[4]:
                     language="bash",
                 )
 with tabs[5]:
-    milestone_placeholder("Identity Resolution", "Milestone 6", "03_identify.py")
+    st.subheader("Identity Resolution")
+    st.caption(
+        "Why did this track resolve to that number — or why did it refuse to? "
+        "Every crop OCR looked at is here with what it made of it."
+    )
+
+    ident_path = identity_path(game_id)
+    reads_path = ocr_reads_path(game_id)
+    if not reads_path.exists():
+        st.info(
+            "No OCR evidence yet. Jersey reading is opt-in because it is slow "
+            "and, on broadcast footage, resolves a minority of tracks. Run:\n\n"
+            f"`python pipeline/03_identify.py --game-id {game_id} --ocr "
+            "--team light=NYK --team dark=SAS`\n\n"
+            "The `--team` flags map each colour cluster to a file in "
+            "`data/rosters/`; without them numbers are still read, but no name "
+            "can be looked up."
+        )
+    elif not ident_path.exists() or not trk_path.exists():
+        st.warning(
+            "OCR evidence exists but the identity table or tracks are missing. "
+            "Re-run stages 2 and 3."
+        )
+    else:
+        evidence = load_ocr_reads(str(reads_path), _mtime(reads_path))
+        identity = load_parquet(str(ident_path), _mtime(ident_path))
+        ocr_tracks = load_parquet(str(trk_path), _mtime(trk_path))
+        ocr_tracks = ocr_tracks[ocr_tracks["class"] == CLASS_PLAYER]
+
+        settings = evidence.get("settings", {})
+        by_key = {
+            (int(entry["shot_id"]), int(entry["tracker_id"])): entry
+            for entry in evidence.get("tracks", [])
+        }
+        numbered = identity[identity["jersey_number"].notna()]
+        named = identity[identity["player_name"].notna()]
+
+        stat_cols = st.columns(4)
+        stat_cols[0].metric("Tracks OCR attempted", len(by_key))
+        stat_cols[1].metric(
+            "Resolved a number", f"{len(numbered)}/{len(identity)}",
+            help="Tracks where enough crops agreed. The rest keep a null "
+            "number, which the spec treats as the correct outcome rather "
+            "than a failure.",
+        )
+        stat_cols[2].metric(
+            "Matched a roster name", len(named),
+            help="A number with no entry in data/rosters/ stays nameless — "
+            "the pipeline never guesses which player it might be.",
+        )
+        stat_cols[3].metric(
+            "Agreeing reads needed", settings.get("min_agreement", "?"),
+            help=f"Reads below OCR confidence "
+            f"{settings.get('min_ocr_confidence', '?')} are discarded, and the "
+            f"winner must also hold "
+            f"{settings.get('min_winner_share', '?')} of what remains.",
+        )
+
+        # Numbers are unique within a team, not across the league, so only a
+        # repeat inside one cluster is evidence of a problem.
+        clashes = numbered[
+            numbered.duplicated(["team_id", "jersey_number"], keep=False)
+        ]
+        if len(clashes):
+            pairs = ", ".join(
+                f"{row.team_id} #{row.jersey_number} (trk {int(row.tracker_id)})"
+                for row in clashes.itertuples()
+            )
+            st.warning(
+                f"One team has the same number on two tracks: {pairs}. That is "
+                "impossible on court, so it means one player was tracked twice "
+                "— an id switch, which the Tracking tab shows — rather than an "
+                "OCR mistake."
+            )
+
+        # ------------------------------------------------------------------
+        # Track picker. Labelled with the outcome so the failures are
+        # findable without opening each one.
+        # ------------------------------------------------------------------
+        def track_label(key) -> str:
+            shot_id, tracker_id = key
+            row = identity[
+                (identity["shot_id"] == shot_id)
+                & (identity["tracker_id"] == tracker_id)
+            ]
+            team = row["team_id"].iloc[0] if len(row) else "?"
+            entry = by_key[key]
+            if entry["jersey_number"]:
+                name = row["player_name"].iloc[0] if len(row) else None
+                who = f"#{entry['jersey_number']}"
+                if isinstance(name, str):
+                    who += f" {name}"
+                return f"trk {tracker_id} · {team} · {who}"
+            best = max(entry["counts"].values(), default=0)
+            return f"trk {tracker_id} · {team} · unresolved (best {best})"
+
+        ordered = sorted(
+            by_key,
+            key=lambda k: (by_key[k]["jersey_number"] is None, k[1]),
+        )
+        chosen = st.selectbox(
+            "Track", ordered, format_func=track_label, key="ocr_track",
+        )
+        entry = by_key[chosen]
+        row = identity[
+            (identity["shot_id"] == chosen[0])
+            & (identity["tracker_id"] == chosen[1])
+        ]
+
+        verdict_cols = st.columns([2, 2, 3])
+        with verdict_cols[0]:
+            if entry["jersey_number"]:
+                st.metric(
+                    "Voted", f"#{entry['jersey_number']}",
+                    help=f"{entry['agreeing']} of {entry['total_reads']} reads "
+                    "agreed.",
+                )
+            else:
+                st.metric("Voted", "—", help="No number was accepted.")
+        with verdict_cols[1]:
+            confidence = float(row["identity_confidence"].iloc[0]) if len(row) else 0.0
+            st.metric(
+                "identity_confidence", f"{confidence:.2f}",
+                help="Fraction of reads agreeing x team-cluster silhouette, "
+                "per docs/04-identity-resolution.md.",
+            )
+        with verdict_cols[2]:
+            tally = pd.DataFrame(
+                sorted(entry["counts"].items(), key=lambda kv: -kv[1]),
+                columns=["read", "times"],
+            )
+            if tally.empty:
+                st.caption("Nothing legible in any sampled crop.")
+            else:
+                st.dataframe(tally, hide_index=True, height=110)
+
+        status_counts = pd.Series(
+            [sample["status"] for sample in entry["samples"]]
+        ).value_counts()
+        st.caption(
+            "Sampled frames: "
+            + ", ".join(f"{count} {name}" for name, count in status_counts.items())
+            + f" (of up to {settings.get('samples_per_track', '?')} tried, "
+            "largest boxes first)"
+        )
+
+        # ------------------------------------------------------------------
+        # The crops themselves, exactly as OCR saw them: same torso window,
+        # same 4x upscale.
+        # ------------------------------------------------------------------
+        show_all = st.checkbox(
+            "Show crops that read nothing", key="ocr_show_all",
+            help="Off by default so the reads that drove the vote come first. "
+            "Turn it on when a track failed and you want to see why.",
+        )
+        samples = [
+            sample for sample in entry["samples"]
+            if show_all or sample.get("reads")
+        ]
+        track_boxes = ocr_tracks[
+            (ocr_tracks["shot_id"] == chosen[0])
+            & (ocr_tracks["tracker_id"] == chosen[1])
+        ].set_index("frame_idx")
+
+        if not samples:
+            st.info("No crop produced a read. Tick the box above to see them.")
+        else:
+            columns = st.columns(8)
+            for slot, sample in enumerate(samples[:24]):
+                frame_idx = int(sample["frame_idx"])
+                if frame_idx not in track_boxes.index:
+                    continue
+                box_row = track_boxes.loc[frame_idx]
+                frame = get_frame(str(video_path), frame_idx)
+                if frame is None:
+                    continue
+                crop = torso_crop(
+                    frame,
+                    (box_row["x1"], box_row["y1"], box_row["x2"], box_row["y2"]),
+                )
+                if crop is None:
+                    continue
+                with columns[slot % 8]:
+                    st.image(bgr_to_rgb(prepare(crop)), width="stretch")
+                    st.caption(
+                        f"{frame_idx} · "
+                        + (", ".join(sample["reads"]) if sample.get("reads")
+                           else sample["status"].replace("_", " "))
+                    )
+
+        # ------------------------------------------------------------------
+        # Manual precision tally. The only way to know whether the thresholds
+        # are set right is to look at the crops and say so.
+        # ------------------------------------------------------------------
+        st.divider()
+        st.markdown("**Spot-check tally**")
+        if "ocr_verdicts" not in st.session_state:
+            st.session_state["ocr_verdicts"] = {}
+        verdicts = st.session_state["ocr_verdicts"]
+        key_str = f"{chosen[0]}:{chosen[1]}"
+        options = ["not checked", "correct", "wrong", "should be null"]
+
+        # Written from a callback into a plain dict: a widget keyed per track
+        # is garbage-collected the moment another track is selected, taking
+        # the verdict with it.
+        def _record_verdict() -> None:
+            st.session_state["ocr_verdicts"][key_str] = st.session_state[
+                "ocr_verdict_widget"
+            ]
+
+        st.radio(
+            "Does the number match the crops above?",
+            options,
+            index=options.index(verdicts.get(key_str, "not checked")),
+            horizontal=True,
+            key="ocr_verdict_widget",
+            on_change=_record_verdict,
+        )
+
+        checked = {k: v for k, v in verdicts.items() if v != "not checked"}
+        if checked:
+            right = sum(1 for v in checked.values() if v == "correct")
+            wrong = sum(1 for v in checked.values() if v == "wrong")
+            missed = sum(1 for v in checked.values() if v == "should be null")
+            answered = right + wrong
+            summary = f"{len(checked)} track(s) checked — {right} correct, "
+            summary += f"{wrong} wrong, {missed} should have been null."
+            if answered:
+                summary += f" Precision so far: {right / answered:.0%}."
+            st.caption(summary)
+            st.caption(
+                "Precision is what matters here, not coverage: a wrong number "
+                "attaches one player's name to another player's movement, and "
+                "every gravity value derived from it is quietly false. If "
+                "wrong reads appear, raise `--min-agreement` rather than "
+                "accepting them."
+            )
+        else:
+            st.caption(
+                "Nothing checked yet. The tally lives for this browser "
+                "session only — it is a sanity check, not a stored label set."
+            )
+
+        with st.expander("Identity table"):
+            st.dataframe(identity, width="stretch", hide_index=True)
 with tabs[6]:
     milestone_placeholder("Gravity Results", "Milestone 7", "06_aggregate.py")

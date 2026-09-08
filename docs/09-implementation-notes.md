@@ -7,7 +7,7 @@ code as it stands.
 ## What exists
 
 ```
-app.py                          Streamlit viewer, Tabs 1-2 live + polygon tuner
+app.py                          Streamlit viewer, Tabs 1-6 live + polygon tuner
 pipeline/common.py              paths, schema constants, video IO, parquet writer
 pipeline/shot_boundaries.py     Stage 0 cut detection
 pipeline/detector.py            Stage 1 detector wrappers
@@ -17,7 +17,8 @@ pipeline/tracker_backends.py    pluggable tracking backends + frame streaming
 pipeline/01_detect.py           Stage 0 + 1 CLI
 pipeline/02_track.py            Stage 2 CLI
 pipeline/team_clustering.py     Stage 3 Part A — kit-colour clustering
-pipeline/03_identify.py         Stage 3 CLI (Part A done, Part B stub)
+pipeline/jersey_ocr.py          Stage 3 Part B — jersey OCR + majority vote
+pipeline/03_identify.py         Stage 3 CLI (Part A always, Part B on --ocr)
 pipeline/possession.py          Stage 4 — ball selection + possession logic
 pipeline/04_ball_possession.py  Stage 4 CLI
 pipeline/court_geometry.py      Stage 5 — court landmarks, homography, checks
@@ -25,10 +26,11 @@ pipeline/05_calibrate.py        Stage 5 CLI
 pipeline/06_aggregate.py        stub — docstrings and NotImplementedError
 tools/make_test_clip.py         synthetic clip with known ground truth
 data/calibration/*.json         court profiles, one per camera angle
+data/rosters/*.json             number -> player name, one file per team
 ```
 
-Stages 3-6 have never been run. Their viewer tabs render a placeholder naming
-the milestone that unlocks them.
+Stage 6 has never been run; its viewer tab renders a placeholder naming the
+milestone that unlocks it.
 
 ## Deviations from the specs, and why
 
@@ -149,11 +151,38 @@ checking the crop grid caught it discarding an unmistakable Spurs jersey. A
 track is now `other` only when its distance to the rival centroid is barely
 worse than to its own, so clean input can legitimately produce no outliers.
 
-**`identity_confidence` carries only the team term.** The spec's formula is
-`frame_agreement * clipped_silhouette`; with OCR unimplemented there is no
-frame-agreement term, so the value is the clipped silhouette scaled by how
-many frames yielded a usable crop, and describes confidence in the team label
-alone.
+**`identity_confidence` means something different in each mode.** The spec's
+formula is `frame_agreement * clipped_silhouette`. Without `--ocr` there is no
+frame-agreement term, so the value is the clipped silhouette scaled by how many
+frames yielded a usable crop, and describes confidence in the *team* label
+alone. With `--ocr` it is the spec's formula, so a track that resolved no
+number scores 0 however obvious its kit colour is. Gravity geometry needs the
+team, not the name, so Stage 6 must gate defender selection on `team_id`.
+
+**Jersey OCR is opt-in, and its thresholds are measured rather than assumed.**
+`--ocr` costs a model load and a second pass over the video for a minority of
+tracks, so it is off by default. Three rules that looked reasonable were wrong
+on real footage — folding single-digit reads into two-digit ones, stripping
+leading zeros, and trusting OCR confidence over volume of agreement — and each
+is documented with its measurement in `04-identity-resolution.md`. The one
+that matters most: EasyOCR runs with a digit allowlist, so its decoder cannot
+answer "that is not a digit"; a jersey wordmark comes back as a digit at
+confidence 1.0. Volume of agreement is the only reliable filter.
+
+**Per-crop OCR evidence is written to a sidecar.** The viewer must never
+re-run processing, so it cannot re-read a crop to explain a track. Stage 3
+writes `outputs/identity/{game_id}_ocr.json` with every sampled frame, its
+status (`read` / `nothing_legible` / `blurred` / `no_crop`) and what OCR
+returned; Tab 6 renders that.
+
+**Rosters are one file per team, not per team-season.** `02-data-schemas.md`
+originally named them `{team_id}_{season}.json`. A run names a team on the
+command line, and the season is already inside the file, so requiring it in the
+filename means retyping a fact the file states. The shipped `NYK.json` and
+`SAS.json` are deliberately partial: they list only players whose surname is
+legible on a jersey in the test clip, because a roster that guesses is worse
+than one with gaps — an unlisted number resolves to a null name, a wrong one
+silently mislabels a player.
 
 ### Stage 4 deviations
 
@@ -242,6 +271,12 @@ fit looks bad.
   features — the same technique BoT-SORT's camera motion compensation uses.
   Until that exists, treat projected distances as approximate and prefer
   annotating a frame near the middle of the possession being measured.
+- Jersey OCR resolves 5 of 25 tracks on the test possession. All 5 are
+  correct and the 12 tracks with nothing legible are correctly left null, but
+  two tracks a human can read are missed — both are #11, whose repeated digit
+  reads as a single "1". Repeated digits ("11", "22", "00" against "0") are
+  the known weak spot. Coverage is limited by what a 76px torso shows, not by
+  the voting rule.
 - Stage 3 misassigns roughly 2 tracks in 25. Both observed failures were
   crops contaminated by background or an overlapping player rather than kit
   colour. The embedding-based feature in `04-identity-resolution.md` (SigLIP

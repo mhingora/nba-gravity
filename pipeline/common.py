@@ -87,6 +87,16 @@ def identity_path(game_id: str) -> Path:
     return IDENTITY_DIR / f"{game_id}.parquet"
 
 
+def ocr_reads_path(game_id: str) -> Path:
+    """Per-crop OCR evidence, written alongside identity when `--ocr` runs.
+
+    The parquet records what each track resolved to; this records why. The
+    viewer needs the individual reads to show a failed track's crops next to
+    what OCR made of them, and it may not re-run OCR itself.
+    """
+    return IDENTITY_DIR / f"{game_id}_ocr.json"
+
+
 def possession_path(game_id: str) -> Path:
     return POSSESSION_DIR / f"{game_id}.parquet"
 

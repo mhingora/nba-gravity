@@ -1,0 +1,8 @@
+{
+  "team_id": "NYK",
+  "season": "2025-26",
+  "note": "Partial, and read off jerseys in data/raw_video/S_N3_HD.mp4 rather than from a box score. Numbers 00, 5 and 32 appear in that footage and resolve through OCR, but their name strips are not legible from any camera angle in the clip, so they are deliberately absent — Stage 3 reports them as numbers without names. Fill them in before relying on name coverage.",
+  "players": {
+    "11": "Brunson"
+  }
+}

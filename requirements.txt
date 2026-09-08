@@ -26,8 +26,11 @@ streamlit-image-coordinates
 # Stage 3 — team colour clustering
 scikit-learn
 
+# Stage 3 Part B — jersey number OCR, only imported when `03_identify.py`
+# runs with --ocr. It pulls in torch, so leave it out if you never read
+# numbers: every other stage works without it.
+easyocr
+
 # tools/court_reference.py only — regenerates docs/court-landmarks.png
 matplotlib
 
-# Later stages — uncomment when their milestone starts
-# easyocr            # jersey number OCR (Stage 6)

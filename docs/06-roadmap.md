@@ -12,8 +12,8 @@ building the whole pipeline blind before seeing any output.
 | 3 — Team classification | **Implemented.** 23 of 25 tracks on the test possession land in the visually correct kit cluster; silhouette 0.36. Viewer Tab 3 renders the crop grid for spot-checking. |
 | 4 — Ball possession | **Implemented.** On the test possession the handler is visually correct wherever one is assigned; 46% of frames have a handler, and the limit is ball detection coverage, not the heuristic. |
 | 5 — Court calibration | **Done for one camera angle.** Six landmarks annotated on S_N3_HD shot 11: rms reprojection error 1.3px, worst known distance off by 0.07ft. Independently validated — 52 of 52 projected player positions land on the court, spaced 3.0-6.7ft apart. Accurate near the annotated frame only; the camera pans within a shot. |
-| 6 — Jersey OCR / identity | Not started. Measured constraint: player boxes are ~218px tall at 1080p, leaving roughly 76px of torso for OCR. |
-| 7 — First end-to-end run | Blocked on 3-6. |
+| 6 — Jersey OCR / identity | **Implemented.** 5 of 25 tracks on the test possession resolve a number; all 5 are correct, and the 12 tracks with no legible number are correctly left null. Two players a human can read (both #11) are missed. Viewer Tab 6 shows every crop with what OCR made of it. |
+| 7 — First end-to-end run | **Unblocked.** Stages 1-5 all produce output on real footage. Gravity needs team labels and court positions, not names, so the sparse OCR coverage does not hold it up. |
 | 8-9 — Validation, scale-up | Blocked on 7. |
 
 Coverage so far: shot segmentation has run over two full clips, but detection
@@ -91,6 +91,17 @@ spanning all 60 frames.
 - **Done when:** a reasonable fraction (start with any nonzero signal — don't
   expect high accuracy immediately) of tracks resolve to the correct player
   name, spot-checked manually against the roster.
+- **Done.** `pipeline/jersey_ocr.py` behind `03_identify.py --ocr`. On the
+  test possession: 5 numbers resolved, 5 correct (2 Harper, 32, 30
+  Champagnie, 00, 5), 12 tracks with nothing legible correctly left null, 2
+  legible-to-a-human #11s missed. Two of the five matched a roster name; the
+  other three are Knicks whose name strips are not legible anywhere in the
+  clip, so `data/rosters/NYK.json` deliberately does not list them.
+- Every crop and its individual read is written to
+  `outputs/identity/{game_id}_ocr.json` and rendered by viewer Tab 6, which
+  is where the spot-check happens.
+- What the numbers cost: three rules that each looked reasonable were wrong
+  on real footage. See `04-identity-resolution.md` for the measurements.
 
 ## Milestone 7 — First end-to-end run, single game
 - Wire all stages together on one full game.
