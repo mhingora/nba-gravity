@@ -7,7 +7,7 @@ code as it stands.
 ## What exists
 
 ```
-app.py                          Streamlit viewer, Tabs 1-6 live + polygon tuner
+app.py                          Streamlit viewer, all 7 tabs live + polygon tuner
 pipeline/common.py              paths, schema constants, video IO, parquet writer
 pipeline/shot_boundaries.py     Stage 0 cut detection
 pipeline/detector.py            Stage 1 detector wrappers
@@ -23,14 +23,14 @@ pipeline/possession.py          Stage 4 — ball selection + possession logic
 pipeline/04_ball_possession.py  Stage 4 CLI
 pipeline/court_geometry.py      Stage 5 — court landmarks, homography, checks
 pipeline/05_calibrate.py        Stage 5 CLI
-pipeline/06_aggregate.py        stub — docstrings and NotImplementedError
+pipeline/gravity.py             Stage 6 — defender distances + the metric
+pipeline/06_aggregate.py        Stage 6 CLI
 tools/make_test_clip.py         synthetic clip with known ground truth
 data/calibration/*.json         court profiles, one per camera angle
 data/rosters/*.json             number -> player name, one file per team
 ```
 
-Stage 6 has never been run; its viewer tab renders a placeholder naming the
-milestone that unlocks it.
+Every stage has now run on real footage.
 
 ## Deviations from the specs, and why
 
@@ -244,6 +244,44 @@ cannot reproduce the lane width, which is the failure that matters.
 worse than none: it produces confident, wrong distances that look plausible
 downstream.
 
+### Stage 6 deviations
+
+**Two artifacts, not one.** The spec names only the metrics table. Stage 6
+also writes `{game_id}_distances.parquet`, the per-frame rows the table
+averages. A deliverable that is an average of averages is untraceable without
+them, and the viewer needs them to plot a possession without re-deriving the
+geometry.
+
+**Offence is decided per camera shot, not per frame.** The spec says the team
+with the ball is on offence, which reads as a per-frame statement. Per frame
+it is wrong — see `05-metrics-and-analysis.md` for the shot-clock evidence —
+so each shot takes the majority of its handler frames, and an unclear majority
+skips the shot.
+
+**Frames are measured only with exactly five tracked defenders.** The spec
+says "the 5 defenders". On real footage that count is often four (a missed
+player) or seven (one player carrying two tracker_ids), and an average over
+either is not an average over a defence. Roughly a third of frames are dropped
+this way.
+
+**A jersey number is enough to be a player row.** The spec's table is keyed by
+`player_name`. Requiring a roster match would discard tracks whose only gap is
+a missing line in a JSON file, so rows fall back to `{team} #{number}`. A
+track with neither name nor number is still excluded: it cannot be matched to
+the same person across shots.
+
+**A row is written even when its delta is not computable.** The spec filters
+rows below the frame floor out of the table entirely. Keeping the row with a
+null `gravity_delta` reports what is known — the overall distances, which the
+spec itself calls raw gravity — and the frame counts beside it say exactly why
+the delta is missing. Silently dropping the row looks identical to the player
+never being seen.
+
+**Only the annotated shot is aggregated by default.** Stage 5 writes the same
+homography to every shot, so `reprojection_error_px` cannot distinguish a
+shot the matrix was fitted to from one it was copied to. Stage 5 now records
+`annotated_on`, and Stage 6 uses it; `--all-shots` overrides.
+
 ## Known gaps
 
 - Real footage has been processed, but only one possession (465 frames of
@@ -271,6 +309,13 @@ fit looks bad.
   features — the same technique BoT-SORT's camera motion compensation uses.
   Until that exists, treat projected distances as approximate and prefer
   annotating a frame near the middle of the possession being measured.
+- **No gravity_delta exists yet.** The full chain runs and writes the
+  deliverable table, but the delta needs the same player measured with and
+  without the ball. On the one calibrated shot — fifteen seconds — neither
+  identified player is ever the tracked handler, so both rows carry raw
+  gravity only (Harper 16.4ft, Champagnie 24.1ft over 278 and 245 frames).
+  This is coverage, not arithmetic: it clears as soon as more shots are
+  calibrated.
 - Jersey OCR resolves 5 of 25 tracks on the test possession. All 5 are
   correct and the 12 tracks with nothing legible are correctly left null, but
   two tracks a human can read are missed — both are #11, whose repeated digit

@@ -168,6 +168,27 @@ def main() -> int:
         print("[error] no shots — run 01_detect.py first", file=sys.stderr)
         return 1
 
+    # Which shot the landmarks were actually annotated on. Every shot gets the
+    # same matrix, so without this the output cannot distinguish the shot the
+    # homography was fitted to from the 31 it was merely copied to — and the
+    # reprojection error is identical in both cases, so it gives no clue.
+    annotated_frame = int(stamp.group(2)) if stamp else None
+    annotated_shot = None
+    if annotated_frame is not None:
+        for shot in shots:
+            if shot.start_frame <= annotated_frame <= shot.end_frame:
+                annotated_shot = shot.shot_id
+                break
+    annotated_on = (
+        {
+            "game_id": stamp.group(1),
+            "frame_idx": annotated_frame,
+            "shot_id": annotated_shot,
+        }
+        if stamp
+        else None
+    )
+
     CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
     # One file per shot, as the schema specifies, even though every shot from
     # the same camera shares a homography. Stage 6 then reads one predictable
@@ -183,6 +204,7 @@ def main() -> int:
                     "court_profile": args.court_profile,
                     "homography_matrix": matrix,
                     "reprojection_error_px": round(rms, 3),
+                    "annotated_on": annotated_on,
                     "landmark_errors_px": residuals,
                     "known_distance_checks": distances,
                 },

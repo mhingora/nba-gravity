@@ -109,6 +109,15 @@ def metrics_path(game_id: str) -> Path:
     return METRICS_DIR / f"{game_id}_gravity.parquet"
 
 
+def distances_path(game_id: str) -> Path:
+    """Per-frame defender distances, written by Stage 6 beside the metrics.
+
+    The gravity table is an average of averages; this is what it averaged.
+    Without it a surprising number has no way to be traced back to a frame.
+    """
+    return METRICS_DIR / f"{game_id}_distances.parquet"
+
+
 # --------------------------------------------------------------------------
 # Source video discovery
 # --------------------------------------------------------------------------

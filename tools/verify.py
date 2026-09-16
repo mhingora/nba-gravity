@@ -209,6 +209,322 @@ def structural_checks(checker: Checker, game_id: str) -> None:
         distances = possession["ball_distance_px"].dropna()
         checker.check("ball_distance_px is never negative", bool((distances >= 0).all()))
 
+    metrics_checks(checker, game_id, players)
+
+
+def metrics_checks(checker: Checker, game_id: str, players: pd.DataFrame) -> None:
+    """Stage 6's two tables, and whether they agree with each other."""
+    from pipeline.common import distances_path, metrics_path
+    from pipeline.court_geometry import COURT_LENGTH_FT, COURT_WIDTH_FT
+    from pipeline.gravity import COURT_MARGIN_FT
+
+    distances_file = distances_path(game_id)
+    if not distances_file.exists():
+        checker.note(f"{game_id}: no gravity output — run 06_aggregate.py")
+        return
+
+    distances = pd.read_parquet(distances_file)
+    check_schema(
+        checker,
+        distances,
+        ["game_id", "shot_id", "frame_idx", "tracker_id", "team_id", "court_x",
+         "court_y", "has_ball", "n_defenders", "avg_defender_distance_ft",
+         "nearest_defender_distance_ft"],
+        "distances",
+    )
+    if not distances.empty:
+        checker.check(
+            "every measured frame has the same defence size",
+            distances["n_defenders"].nunique() == 1,
+            f"sizes {sorted(distances['n_defenders'].unique())}",
+        )
+        checker.check(
+            "the nearest defender is never further than the average",
+            bool(
+                (
+                    distances["nearest_defender_distance_ft"]
+                    <= distances["avg_defender_distance_ft"] + 1e-9
+                ).all()
+            ),
+        )
+        checker.check(
+            "measured players are on the court",
+            bool(
+                distances["court_x"]
+                .between(-COURT_MARGIN_FT, COURT_WIDTH_FT + COURT_MARGIN_FT)
+                .all()
+                and distances["court_y"]
+                .between(-COURT_MARGIN_FT, COURT_LENGTH_FT + COURT_MARGIN_FT)
+                .all()
+            ),
+        )
+        known = set(map(tuple, players[["shot_id", "tracker_id"]].drop_duplicates().values))
+        orphans = [
+            row for row in map(tuple, distances[["shot_id", "tracker_id"]].values)
+            if row not in known
+        ]
+        checker.check(
+            "distances refer only to real tracks", not orphans, f"{len(orphans)} orphans"
+        )
+        checker.check(
+            "one row per (frame, player), no duplicates",
+            not distances.duplicated(["shot_id", "frame_idx", "tracker_id"]).any(),
+        )
+
+    metrics_file = metrics_path(game_id)
+    if not metrics_file.exists():
+        return
+    metrics = pd.read_parquet(metrics_file)
+    check_schema(
+        checker,
+        metrics,
+        ["player_label", "player_name", "games_included",
+         "frames_with_possession", "frames_without_possession",
+         "avg_defender_distance_with_ball", "avg_defender_distance_without_ball",
+         "gravity_delta", "avg_defender_distance_overall"],
+        "gravity",
+    )
+    if metrics.empty:
+        checker.note(f"{game_id}: no player row survived aggregation")
+        return
+
+    checker.check(
+        "one row per player, no duplicates",
+        not metrics["player_label"].duplicated().any(),
+    )
+    with_delta = metrics[metrics["gravity_delta"].notna()]
+    if len(with_delta):
+        recomputed = (
+            with_delta["avg_defender_distance_without_ball"]
+            - with_delta["avg_defender_distance_with_ball"]
+        )
+        checker.check(
+            "gravity_delta is exactly without-ball minus with-ball",
+            bool((with_delta["gravity_delta"] - recomputed).abs().max() < 1e-9),
+        )
+    else:
+        checker.note(
+            f"{game_id}: no player has frames in both buckets, so no "
+            "gravity_delta — the footage processed is too short, not a bug"
+        )
+    checker.check(
+        "no player row is built from zero frames",
+        bool(
+            (
+                metrics["frames_with_possession"]
+                + metrics["frames_without_possession"]
+                > 0
+            ).all()
+        ),
+    )
+    total_frames = int(
+        metrics["frames_with_possession"].sum()
+        + metrics["frames_without_possession"].sum()
+    )
+    checker.check(
+        "the metrics table counts no more frames than were measured",
+        total_frames <= len(distances),
+        f"{total_frames} counted vs {len(distances)} measured",
+    )
+
+
+def _gravity_fixture(defender_ys=(25, 30, 35, 40, 45), handler=1):
+    """A frame with a target at (25,20) and defenders straight down court.
+
+    Distances come out 5, 10, 15, 20, 25 ft, so the average is 15 and the
+    nearest is 5 — numbers that can be checked by hand rather than by
+    re-running the code that produced them.
+    """
+    rows = [
+        {"game_id": "T", "shot_id": 0, "frame_idx": 0, "tracker_id": 1,
+         "class": CLASS_PLAYER, "foot_x": 25.0, "foot_y": 20.0},
+    ]
+    for offset, y in enumerate(defender_ys):
+        rows.append(
+            {"game_id": "T", "shot_id": 0, "frame_idx": 0,
+             "tracker_id": 100 + offset, "class": CLASS_PLAYER,
+             "foot_x": 25.0, "foot_y": float(y)}
+        )
+    tracks = pd.DataFrame(rows)
+
+    identity = pd.DataFrame(
+        [{"shot_id": 0, "tracker_id": 1, "team_id": "dark",
+          "jersey_number": "2", "player_name": "Tester",
+          "identity_confidence": 0.5}]
+        + [
+            {"shot_id": 0, "tracker_id": 100 + i, "team_id": "light",
+             "jersey_number": None, "player_name": None,
+             "identity_confidence": 0.5}
+            for i in range(len(defender_ys))
+        ]
+    )
+    possession = pd.DataFrame(
+        [{"game_id": "T", "shot_id": 0, "frame_idx": 0,
+          "ball_handler_tracker_id": handler, "ball_distance_px": 1.0}]
+    )
+    return tracks, identity, possession
+
+
+def gravity_checks(checker: Checker) -> None:
+    """Stage 6's arithmetic, on positions whose answers are known by hand.
+
+    The court projection is fed an identity homography here, so a foot point
+    at (25, 20) is 25ft across and 20ft down the court. That keeps these
+    checks about the metric rather than about the homography, which
+    `homography_checks` already covers.
+    """
+    from pipeline.gravity import (
+        aggregate_players,
+        combine_games,
+        defender_distances,
+        offensive_team,
+        player_label,
+    )
+
+    identity_matrix = np.eye(3)
+    tracks, identity, possession = _gravity_fixture()
+
+    offense = offensive_team(possession, identity)
+    checker.check(
+        "the handler's team is the offence",
+        offense[0].team_id == "dark",
+        f"got {offense[0].team_id}",
+    )
+
+    distances = defender_distances(
+        tracks, identity, possession, offense, {0: identity_matrix}
+    )
+    checker.check(
+        "one row per offensive player per frame",
+        len(distances) == 1,
+        f"got {len(distances)}",
+    )
+    if len(distances) == 1:
+        row = distances.iloc[0]
+        checker.check(
+            "average defender distance is the mean of the five",
+            abs(row["avg_defender_distance_ft"] - 15.0) < 1e-6,
+            f"got {row['avg_defender_distance_ft']:.3f}",
+        )
+        checker.check(
+            "nearest defender distance is the closest one",
+            abs(row["nearest_defender_distance_ft"] - 5.0) < 1e-6,
+            f"got {row['nearest_defender_distance_ft']:.3f}",
+        )
+        checker.check("the handler is flagged as having the ball", bool(row["has_ball"]))
+
+    # A sixth defender means one player is tracked twice, which would weight
+    # them double in the average.
+    crowded_tracks, crowded_identity, crowded_possession = _gravity_fixture(
+        defender_ys=(25, 30, 35, 40, 45, 50)
+    )
+    six = defender_distances(
+        crowded_tracks,
+        crowded_identity,
+        crowded_possession,
+        offensive_team(crowded_possession, crowded_identity),
+        {0: identity_matrix},
+    )
+    checker.check("a frame with six defenders is dropped", six.empty, f"got {len(six)}")
+
+    # Offence is a per-shot majority; a shot that cannot decide is refused.
+    split = pd.DataFrame(
+        [
+            {"game_id": "T", "shot_id": 0, "frame_idx": i,
+             "ball_handler_tracker_id": 1 if i % 2 else 100,
+             "ball_distance_px": 1.0}
+            for i in range(10)
+        ]
+    )
+    checker.check(
+        "a shot with a split handler team is refused, not guessed",
+        offensive_team(split, identity)[0].team_id is None,
+    )
+
+    # Aggregation: 120 frames without the ball at 20ft, 120 with it at 10ft.
+    frames = []
+    for i in range(240):
+        has_ball = i < 120
+        frames.append(
+            {"game_id": "T", "shot_id": 0, "frame_idx": i, "tracker_id": 1,
+             "team_id": "dark", "court_x": 25.0, "court_y": 20.0,
+             "has_ball": has_ball, "n_defenders": 5,
+             "avg_defender_distance_ft": 10.0 if has_ball else 20.0,
+             "nearest_defender_distance_ft": 4.0 if has_ball else 8.0}
+        )
+    table = aggregate_players(pd.DataFrame(frames), identity, min_bucket_frames=100)
+    checker.check("an identified track becomes a player row", len(table) == 1)
+    if len(table) == 1:
+        got = table.iloc[0]
+        checker.check(
+            "gravity_delta is without-ball minus with-ball",
+            abs(got["gravity_delta"] - 10.0) < 1e-6,
+            f"got {got['gravity_delta']}",
+        )
+        checker.check(
+            "the row is keyed by the roster name when there is one",
+            got["player_label"] == "Tester",
+            f"got {got['player_label']}",
+        )
+
+    thin = aggregate_players(
+        pd.DataFrame(frames[:130]), identity, min_bucket_frames=100
+    )
+    checker.check(
+        "a bucket under the frame floor leaves the delta null, not wrong",
+        len(thin) == 1
+        and pd.isna(thin.iloc[0]["gravity_delta"])
+        and thin.iloc[0]["avg_defender_distance_overall"] is not None,
+    )
+
+    checker.check(
+        "a number without a roster name still identifies a player",
+        player_label({"player_name": None, "jersey_number": "24", "team_id": "dark"})
+        == "dark #24",
+    )
+    checker.check(
+        "a track with neither name nor number is not a player row",
+        player_label({"player_name": None, "jersey_number": None, "team_id": "dark"})
+        is None,
+    )
+
+    # Two games of 60 frames a bucket: neither supports a delta alone, both
+    # together do, and the rollup must weight by frames rather than by game.
+    def one_game(avg_with: float, frames_each: int) -> pd.DataFrame:
+        return aggregate_players(
+            pd.DataFrame(
+                [
+                    {"game_id": "T", "shot_id": 0, "frame_idx": i, "tracker_id": 1,
+                     "team_id": "dark", "court_x": 25.0, "court_y": 20.0,
+                     "has_ball": i < frames_each, "n_defenders": 5,
+                     "avg_defender_distance_ft": avg_with if i < frames_each else 20.0,
+                     "nearest_defender_distance_ft": 4.0 if i < frames_each else 8.0}
+                    for i in range(frames_each * 2)
+                ]
+            ),
+            identity,
+            min_bucket_frames=100,
+        )
+
+    first, second = one_game(10.0, 60), one_game(14.0, 60)
+    checker.check(
+        "neither game alone supports a delta",
+        pd.isna(first.iloc[0]["gravity_delta"])
+        and pd.isna(second.iloc[0]["gravity_delta"]),
+    )
+    rolled = combine_games([first, second], min_bucket_frames=100)
+    checker.check(
+        "pooled frames across games do support one",
+        len(rolled) == 1 and abs(rolled.iloc[0]["gravity_delta"] - 8.0) < 1e-6,
+        f"got {rolled.iloc[0]['gravity_delta'] if len(rolled) else 'no row'}",
+    )
+    checker.check(
+        "the rollup counts every frame from both games",
+        len(rolled) == 1
+        and rolled.iloc[0]["frames_with_possession"] == 120
+        and rolled.iloc[0]["frames_without_possession"] == 120,
+    )
+
 
 def identity_ocr_checks(
     checker: Checker, game_id: str, identity: pd.DataFrame
@@ -521,6 +837,11 @@ def main() -> int:
             (["pipeline/02_track.py", "--game-id", SYNTHETIC_GAME], "stage 2 track"),
             (["pipeline/03_identify.py", "--game-id", SYNTHETIC_GAME], "stage 3 identify"),
             (["pipeline/04_ball_possession.py", "--game-id", SYNTHETIC_GAME], "stage 4 possession"),
+            # The synthetic clip has no annotated court, so stage 6 finds
+            # nothing to project and writes empty tables. Running it anyway is
+            # the point: "nothing survived the filters" is the path most
+            # likely to crash, and the one real footage hits most often.
+            (["pipeline/06_aggregate.py", "--game-id", SYNTHETIC_GAME], "stage 6 aggregate"),
         ]
         for command, label in stages:
             if not run(command, checker, label):
@@ -535,6 +856,9 @@ def main() -> int:
 
         print("\nChecking stage 3 jersey-number voting")
         jersey_ocr_checks(checker)
+
+        print("\nChecking stage 6 gravity arithmetic")
+        gravity_checks(checker)
 
     print(f"\nChecking structural invariants for {args.game_id}")
     structural_checks(checker, args.game_id)

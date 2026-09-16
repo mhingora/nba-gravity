@@ -82,6 +82,51 @@ shouldn't even reach the output table:
   scheme) will add noise you likely can't fully control for in v1 — flag it
   as a known limitation rather than trying to solve it immediately.
 
+## What the implementation measured
+
+Stage 6 is built (`pipeline/gravity.py`, run by `06_aggregate.py`). Three
+decisions the spec leaves open turned out to matter more than the arithmetic,
+and each was settled against the test possession rather than by argument.
+
+**Which team is defending.** The only available signal is the ball handler,
+and taken frame by frame it is wrong: on the test possession the handler's
+team flips four times in fifteen seconds. The broadcast scorebug settles it —
+the shot clock counts 14 → 9 → 8 → 7 with no reset, so San Antonio had the
+ball throughout, and the flips are a Knicks defender momentarily being the
+player nearest a contested ball. Following them would have inverted who counts
+as a defender for those frames. Offence is therefore decided once per camera
+shot, by majority of handler frames (70/30 here), and a shot whose handler
+frames do not reach a clear majority is skipped rather than guessed at.
+
+**How many defenders.** After projection, a third of frames show six to nine
+defenders on the floor. They are real people in real positions; the surplus is
+one player carrying two tracker_ids, which weights that player twice in the
+average. Only frames with exactly five tracked defenders are measured — 294 of
+464 on the test possession. This is a filter, not a fix: the fix is Milestone
+1's re-identification problem.
+
+**Which shots can be projected at all.** Stage 5 writes one homography per
+shot, but every shot of a game gets the same matrix, so its
+`reprojection_error_px` says nothing about a shot the landmarks were not
+annotated on. Only the annotated shot is aggregated unless `--all-shots` says
+otherwise.
+
+### What one possession can and cannot produce
+
+Running the whole chain on the test possession gives 1,365 player-frames over
+284 measured frames, a median defender distance of 19.4 ft and a median
+nearest defender of 6.9 ft — the right order of magnitude for half-court
+basketball. Two players are identified well enough to name, and their raw
+gravity separates the way watching the footage suggests: Harper 16.4 ft,
+Champagnie 24.1 ft.
+
+No `gravity_delta` is computable, because neither identified player is ever
+the tracked ball handler in those fifteen seconds. That is not a bug to fix in
+the metric; it is the coverage the footage provides. A delta needs the same
+player measured both with and without the ball, which needs possessions, not a
+possession — and more possessions need more calibrated shots, which is the
+open problem in `09-implementation-notes.md`.
+
 ## Suggested output views
 
 1. **Per-player leaderboard** — `gravity_delta` and

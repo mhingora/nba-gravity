@@ -23,6 +23,7 @@ from pathlib import Path
 # way; make `import pipeline` work regardless of where this is run from.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import altair as alt
 import cv2
 import numpy as np
 import pandas as pd
@@ -36,7 +37,9 @@ from pipeline.common import (
     detections_path,
     find_video,
     list_games,
+    distances_path,
     load_shots,
+    metrics_path,
     read_frame,
     identity_path,
     ocr_reads_path,
@@ -77,6 +80,7 @@ try:
 except ImportError:  # optional: the tab falls back to typing coordinates
     streamlit_image_coordinates = None
 
+from pipeline.gravity import player_label
 from pipeline.jersey_ocr import prepare, torso_crop
 from pipeline.possession import possession_summary
 from pipeline.track_quality import EXPECTED_PLAYERS, summarize
@@ -1826,4 +1830,152 @@ with tabs[5]:
         with st.expander("Identity table"):
             st.dataframe(identity, width="stretch", hide_index=True)
 with tabs[6]:
-    milestone_placeholder("Gravity Results", "Milestone 7", "06_aggregate.py")
+    st.subheader("Gravity Results")
+    st.caption(
+        "The headline numbers, and the frame-by-frame distances they average. "
+        "A number here is only as good as the trace underneath it."
+    )
+
+    gravity_file = metrics_path(game_id)
+    trace_file = distances_path(game_id)
+    if not trace_file.exists():
+        st.info(
+            "No metrics yet. Stage 6 needs tracks, identity, possession and a "
+            "calibrated shot. Run:\n\n"
+            f"`python pipeline/06_aggregate.py --game-id {game_id}`"
+        )
+    else:
+        trace = load_parquet(str(trace_file), _mtime(trace_file))
+        metrics = (
+            load_parquet(str(gravity_file), _mtime(gravity_file))
+            if gravity_file.exists()
+            else pd.DataFrame()
+        )
+
+        if trace.empty:
+            st.warning(
+                "Stage 6 ran but measured no frames. Its console output lists "
+                "which shots were skipped and why — the usual causes are an "
+                "uncalibrated shot and a defence that is never tracked five "
+                "players strong."
+            )
+        else:
+            measured_frames = trace["frame_idx"].nunique()
+            head = st.columns(4)
+            head[0].metric("Frames measured", measured_frames)
+            head[1].metric(
+                "Player-frames", len(trace),
+                help="One per offensive player per measured frame.",
+            )
+            head[2].metric(
+                "Median defender distance", f"{trace['avg_defender_distance_ft'].median():.1f} ft",
+            )
+            head[3].metric(
+                "Median nearest defender", f"{trace['nearest_defender_distance_ft'].median():.1f} ft",
+            )
+
+            st.markdown("**Leaderboard**")
+            if metrics.empty:
+                st.warning(
+                    "Distances were measured but no player row was written: no "
+                    "measured track carried a name or a number. Run "
+                    "`03_identify.py --ocr` so tracks can be identified."
+                )
+            else:
+                display = metrics.copy()
+                for column in display.columns:
+                    if display[column].dtype.kind == "f":
+                        display[column] = display[column].round(1)
+                st.dataframe(display, width="stretch", hide_index=True)
+                missing = int(metrics["gravity_delta"].isna().sum())
+                if missing:
+                    st.caption(
+                        f"{missing} of {len(metrics)} row(s) have a null "
+                        "`gravity_delta`. That needs frames in *both* buckets: "
+                        "a player who never holds the ball in the footage "
+                        "processed has no with-ball average to subtract from. "
+                        "`avg_defender_distance_overall` is still meaningful — "
+                        "it is the spec's raw-gravity measure."
+                    )
+
+            # ----------------------------------------------------------------
+            # The trace. `05-metrics-and-analysis.md` calls this the view that
+            # decides whether the aggregate deserves to be believed.
+            # ----------------------------------------------------------------
+            st.markdown("**Defender distance over the possession**")
+            # Name the tracks in the picker the same way stage 6 names its
+            # rows, so a player found in the leaderboard is findable here.
+            gravity_identity = (
+                load_parquet(str(identity_path(game_id)), _mtime(identity_path(game_id)))
+                if identity_path(game_id).exists()
+                else pd.DataFrame()
+            )
+            known_tracks = (
+                gravity_identity.set_index("tracker_id").to_dict("index")
+                if not gravity_identity.empty
+                else {}
+            )
+            labels = {}
+            for tracker_id in sorted(int(t) for t in trace["tracker_id"].unique()):
+                record = known_tracks.get(tracker_id, {})
+                label = player_label(record) if record else None
+                labels[tracker_id] = (
+                    f"trk {tracker_id} · {label}" if label else f"trk {tracker_id} · unidentified"
+                )
+            pick = st.selectbox(
+                "Player",
+                sorted(labels),
+                format_func=lambda t: labels[t],
+                key="gravity_player",
+            )
+            player_trace = trace[trace["tracker_id"] == pick].sort_values("frame_idx")
+
+            ball_frames = player_trace[player_trace["has_ball"]]
+            trace_cols = st.columns(3)
+            trace_cols[0].metric("Frames on court", len(player_trace))
+            trace_cols[1].metric(
+                "With the ball", len(ball_frames),
+                help="Frames where stage 4 named this track as the handler.",
+            )
+            trace_cols[2].metric(
+                "Mean defender distance",
+                f"{player_trace['avg_defender_distance_ft'].mean():.1f} ft",
+            )
+
+            long = player_trace.melt(
+                id_vars=["frame_idx", "has_ball"],
+                value_vars=["avg_defender_distance_ft", "nearest_defender_distance_ft"],
+                var_name="measure",
+                value_name="feet",
+            )
+            long["measure"] = long["measure"].map(
+                {
+                    "avg_defender_distance_ft": "all defenders (mean)",
+                    "nearest_defender_distance_ft": "nearest defender",
+                }
+            )
+            # zero=False or the axis runs from frame 0, squashing a
+            # possession that starts two minutes into the clip into a sliver.
+            frame_axis = alt.X(
+                "frame_idx:Q", title="frame", scale=alt.Scale(zero=False, nice=False)
+            )
+            chart = alt.layer(
+                alt.Chart(ball_frames).mark_rule(opacity=0.20, color="#f0a202").encode(
+                    x=frame_axis
+                ),
+                alt.Chart(long).mark_line().encode(
+                    x=frame_axis,
+                    y=alt.Y("feet:Q", title="distance (ft)"),
+                    color=alt.Color("measure:N", title=None),
+                ),
+            ).properties(height=280)
+            st.altair_chart(chart, width="stretch")
+            st.caption(
+                "Shaded frames are where this player has the ball. Gravity "
+                "predicts the lines dipping inside the shading. Gaps in the "
+                "lines are frames stage 6 discarded — most often because the "
+                "defence was not tracked five players strong."
+            )
+
+            with st.expander("Per-frame table"):
+                st.dataframe(player_trace, width="stretch", hide_index=True)

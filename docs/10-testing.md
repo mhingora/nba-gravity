@@ -19,14 +19,16 @@ checks the output against answers that are known because the clip was built
 with them: three cuts at fixed frames, ten players per frame, five per kit
 colour. Exit code is 0 only if everything passes, so it works as a gate.
 
-Expect **45/45 passed**. Run it after any change to the pipeline; if a check
+Expect **64/64 passed**. Run it after any change to the pipeline; if a check
 that used to pass now fails, that change broke something.
 
 What it proves: schemas, shot segmentation, per-shot tracker resets, team
-clustering, possession plumbing, the homography maths, and the jersey-number
-voting rules (which are pure logic, so they are asserted against the reads
-real footage produced without needing a video or an OCR model). What it does
-**not** prove: anything about real footage. Detector recall, id stability through contact and clustering
+clustering, possession plumbing, the homography maths, the jersey-number
+voting rules, and the gravity arithmetic. The last two are pure logic, so they
+are asserted on inputs whose answers are known by hand — the OCR reads real
+footage produced, and five defenders placed at 5, 10, 15, 20 and 25 feet — and
+need neither a video nor a model. What it does **not** prove: anything about
+real footage. Detector recall, id stability through contact and clustering
 accuracy on actual kits cannot be checked without ground truth, which the
 synthetic clip has and real video does not.
 
@@ -40,8 +42,9 @@ Skips ground truth and runs only the invariants that must hold for any
 footage: documented columns present, no tracker_id appearing twice in one
 frame, foot points at the bottom-centre of their box, possession referring to
 tracks that exist, confidences within 0-1, no player name without the number
-and team it was looked up from, and the OCR evidence file telling the same
-story as the identity table.
+and team it was looked up from, the OCR evidence file telling the same story
+as the identity table, and every gravity_delta being exactly the subtraction
+it claims to be.
 
 This cannot tell you the output is *correct*. It tells you the tables are not
 malformed — which is worth knowing, because most bugs found so far were
@@ -217,6 +220,33 @@ a number; the other 20 either show no number to the camera or are not players
 at all. That is the designed outcome, not a failure — see
 `04-identity-resolution.md`.
 
+### Tab 7 — Gravity Results
+
+**Question: does the headline number come from frames that make sense?**
+
+Needs stage 6, which needs a calibrated shot:
+
+```
+python pipeline/06_aggregate.py --game-id S_N3_HD
+```
+
+- The **leaderboard** is the deliverable table. Read the frame counts next to
+  every average — a row built on 20 frames is not a measurement, and the
+  counts are there so low-sample rows are visibly weak rather than hidden.
+- A null `gravity_delta` is not a failure. It means that player has frames in
+  only one of the two buckets, and the row still reports its overall distances.
+- The **trace** is the check that matters. Pick a player and look at the two
+  lines against the shaded frames where they hold the ball. Gravity predicts
+  the lines dipping inside the shading. If they do not, either the player has
+  no gravity or the pipeline is wrong — and the only way to tell is to open
+  the Ball Possession tab on those same frames and see who actually had it.
+- **Gaps in the lines are frames stage 6 discarded**, overwhelmingly because
+  the defence was not tracked five players strong. A trace that is mostly gaps
+  means the tracking, not the metric, is what needs work.
+- Distances should read like basketball: 15-25 ft for the five-defender mean,
+  4-10 ft for the nearest defender. Tens of thousands of feet mean the
+  homography is wrong; check Tab 5's radar first.
+
 ## 3. Per-run scorecards
 
 Every `02_track.py` run prints its own quality line, so the CLI answers the
@@ -230,20 +260,28 @@ shot 11: 31 track(s), median 10/frame (79% of frames have 10+), longest 461f (99
 how many tracks resolved a number, how many matched a roster name, and which
 numbers have no roster entry so the gap can be filled in a minute; `04_ball_possession.py`
 prints the possession radius, the share of frames with a handler, and the
-number of spans. These are the numbers to quote when comparing two
+number of spans. `06_aggregate.py` prints which shots it skipped and why,
+which is usually the whole story: on real footage most frames are excluded,
+and a table that does not say why is indistinguishable from one that found
+nothing. These are the numbers to quote when comparing two
 configurations — that is how the detector and tracker comparisons in the
 README were run.
 
 ## What is not tested
 
-No milestone is closed, so none of this proves the pipeline works end to end.
-In particular:
+The chain now runs end to end, but that is not the same as the metric being
+trustworthy. In particular:
 
 - **Milestone 1 is open.** Six of ten players hold a single id for a full
   possession; the rest fragment. No automated check will tell you that is
-  acceptable — you have to watch the clip and decide.
-- **No camera angle has been annotated**, so despite Stage 5 existing there
-  is no homography for real footage and distances are still in pixels rather
-  than feet. **Stage 6 does not exist**, so no track resolves to a player name.
+  acceptable — you have to watch the clip and decide. It shows up in Stage 6
+  as frames with six to nine "defenders", which are then discarded.
+- **One camera angle is annotated, on one shot.** Every other shot carries a
+  copy of that homography and is skipped by default. Nothing has verified how
+  far a homography travels before it stops being right.
+- **No `gravity_delta` has ever been computed on real footage.** The
+  arithmetic is asserted against hand-computed inputs, but no identified
+  player in the processed footage has frames both with and without the ball,
+  so the end-to-end path to a delta is untested on video.
 - **Everything so far is one possession.** 465 frames of 7,786. Behaviour at
   scale, across camera angles and replays, is unmeasured.

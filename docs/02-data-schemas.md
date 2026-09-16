@@ -3,11 +3,10 @@
 All tabular outputs are parquet, partitioned by `game_id`. Reference tables
 (rosters, calibration points) are hand-maintained JSON/CSV.
 
-> **Implementation status.** Detections, shots, tracks, identity, possession
-> and calibration are implemented and written by stages 1-5. Metrics are still
-> a spec — no code writes them yet. Path helpers for every artifact live in
-> `pipeline/common.py`, which is the single place that knows where things go;
-> nothing else hardcodes a path.
+> **Implementation status.** Every table below is implemented and written by
+> stages 1-6. Path helpers for every artifact live in `pipeline/common.py`,
+> which is the single place that knows where things go; nothing else hardcodes
+> a path.
 
 ## `data/rosters/{team_id}.json`
 
@@ -200,14 +199,28 @@ against.
   "game_id": "0022500123",
   "shot_id": 47,
   "camera_angle": "main_baseline",
+  "court_profile": "msg_main",
   "homography_matrix": [[...], [...], [...]],
-  "reprojection_error_px": 3.2
+  "reprojection_error_px": 3.2,
+  "annotated_on": {"game_id": "0022500123", "frame_idx": 3329, "shot_id": 11},
+  "landmark_errors_px": [{"landmark": "free_throw_left", "error_px": 1.34}],
+  "known_distance_checks": [
+    {"from": "lane_baseline_left", "to": "lane_baseline_right",
+     "expected_ft": 16.0, "measured_ft": 16.0, "error_ft": -0.0}
+  ]
 }
 ```
 
 `reprojection_error_px` should be logged and used as a filter — throw out
 distance calculations from shots where calibration was clearly bad rather
 than silently trusting a warped homography.
+
+**`reprojection_error_px` cannot tell you the matrix fits *this* shot.** Every
+shot of a game is written the same matrix and the same error, because the
+error is the residual on the one frame a person annotated. `annotated_on`
+records which frame and shot that was, and it is the only field that
+distinguishes a fitted shot from a copied one. Stage 6 aggregates the
+annotated shot by default for exactly this reason.
 
 ## `outputs/possession/{game_id}.parquet`
 
@@ -219,20 +232,63 @@ than silently trusting a warped homography.
 | ball_handler_tracker_id | int \| null | null if no player is within possession threshold |
 | ball_distance_px | float | distance from ball centroid to handler bbox, for debugging threshold choices |
 
+## `outputs/metrics/{game_id}_distances.parquet`
+
+Per-frame evidence, written by Stage 6 beside the metrics table. The gravity
+table is an average of averages; this is what it averaged. One row per
+offensive player per measured frame.
+
+| column      | type | notes                                              |
+|-------------|------|------------------------------------------------------|
+| game_id     | str  |                                                        |
+| shot_id     | int  |                                                        |
+| frame_idx   | int  |                                                        |
+| tracker_id  | int  |                                                        |
+| team_id     | str  | the team on offence in this shot                       |
+| court_x, court_y | float | feet, from the foot point through the homography |
+| has_ball    | bool | this track is stage 4's handler for the frame          |
+| n_defenders | int  | defenders tracked on court; constant by construction   |
+| avg_defender_distance_ft     | float | mean over those defenders          |
+| nearest_defender_distance_ft | float | the closest one                    |
+
+A frame only appears when the defence was tracked at exactly the expected size
+(five). Fewer is a missed player and more is one player carrying two
+tracker_ids — neither average is over a defence, so the frame is dropped
+rather than averaged. Gaps in this table are the normal state of real footage,
+which is why the viewer plots it rather than summarising it away.
+
 ## `outputs/metrics/{game_id_or_'all'}_gravity.parquet`
 
 Final aggregated output — this is the deliverable table.
 
 | column                     | type  | notes                                    |
 |-----------------------------|-------|--------------------------------------------|
-| player_name                 | str   |                                              |
+| player_label                | str   | how the row is keyed: the roster name, else `{team} #{number}` |
+| player_name                 | str \| null | null when the number matched no roster |
+| team_id                     | str   |                                              |
+| jersey_number               | str \| null |                                       |
 | games_included              | int   |                                              |
 | frames_with_possession       | int   |                                              |
 | frames_without_possession    | int   |                                              |
 | avg_defender_distance_with_ball    | float | court units (feet)                    |
 | avg_defender_distance_without_ball | float | court units (feet)                    |
-| gravity_delta                | float | without_ball minus with_ball              |
+| gravity_delta                | float \| null | without_ball minus with_ball; null unless both buckets clear the frame floor |
+| avg_defender_distance_overall      | float | the spec's raw-gravity measure   |
+| nearest_defender_with_ball / _without_ball / _delta / _overall | float | the same four, over the single closest defender |
+
+`player_label` exists because a jersey number *is* an identity — it is what a
+box score uses — and requiring a roster match before a player can be measured
+would throw away tracks whose only gap is a missing line in a JSON file. A
+track with neither a name nor a number never becomes a row: it cannot be
+matched to the same person in the next camera shot, let alone the next game.
+
+A null `gravity_delta` beside visible frame counts is the designed answer for
+a player who never holds the ball in the footage processed. The row still
+carries its overall distances, which `05-metrics-and-analysis.md` treats as a
+metric in its own right.
 
 Keep both the per-game and the `all`-aggregated version — per-game lets you
 sanity-check for outlier games (bad calibration, garbage-time minutes, etc.)
-before trusting the aggregate.
+before trusting the aggregate. The rollup weights each game's averages by its
+frame counts and re-applies the frame floor to the totals, so two games of 60
+with-ball frames together support a delta neither supports alone.

@@ -63,6 +63,28 @@ the bar is four agreeing reads out of 24 sampled frames and a strict majority
 of what survives. A wrong number attaches one player's name to another
 player's movement, so refusing is the cheaper error.
 
+**The first end-to-end numbers.** The full chain on that possession measures
+284 frames and 1,365 player-frames, at a median defender distance of 19.4 ft
+(nearest defender 6.9 ft) — the right order of magnitude for half-court
+basketball. The two players identified by name separate the way the footage
+looks:
+
+| | frames on court | defenders (mean) | nearest defender |
+|---|---|---|---|
+| Harper (#2) | 278 | **16.4 ft** | 5.5 ft |
+| Champagnie (#30) | 245 | **24.1 ft** | 8.7 ft |
+
+Getting there meant refusing three tempting shortcuts. The handler's team
+flips four times in those fifteen seconds, but the broadcast shot clock counts
+14 → 9 → 8 → 7 without resetting — one team had the ball throughout, and the
+flips are a defender momentarily nearest a contested ball, so offence is
+decided per camera shot rather than per frame. A third of frames show six to
+nine "defenders" on court, which is one player carrying two tracker_ids, so
+only frames with exactly five are measured. And every shot of a game carries
+the same homography with the same reprojection error, so that error cannot
+say whether it fits a shot it was never annotated on; only the annotated shot
+is aggregated by default.
+
 Counter-intuitively, the court-polygon crowd filter built for the COCO
 detector *hurts* with a basketball detector: it was compensating for crowd
 detections that no longer happen, and it clips real players instead. Kept for
@@ -70,15 +92,17 @@ generic weights, skipped otherwise.
 
 ## Status
 
-**Stages 1-5 run on real broadcast footage** — shot segmentation, detection,
-tracking, team classification, ball possession, court calibration and jersey
-identity. One camera angle is calibrated to 1.3px reprojection error,
-validated by projecting tracked players onto the court, so positions are now
-in feet rather than pixels.
+**All six stages run on real broadcast footage**, end to end: shot
+segmentation, detection, tracking, team classification, ball possession, court
+calibration, jersey identity and the metric itself. One camera angle is
+calibrated to 1.3px reprojection error, validated by projecting tracked
+players onto the court, so positions are in feet rather than pixels.
 
-Milestones 1 and 2 remain open on their own terms, Stage 6 (aggregation) is a
-stub, and no gravity number exists yet — the research question above is still
-unanswered.
+The research question is still unanswered. `gravity_delta` needs the same
+player measured with *and* without the ball, and the one calibrated shot is
+fifteen seconds long — neither identified player holds the ball in it. What
+the chain does produce is the other half of the metric: how tightly defenders
+play a given player overall.
 
 Detection and tracking have run on **one hand-picked possession** — 465 of
 7,786 frames, about 6% of a single clip. Shot segmentation has run over full
@@ -118,13 +142,14 @@ nba-gravity/
 │   ├── court_geometry.py         # Stage 5 landmarks + homography
 │   ├── 01_detect.py             # ✅ implemented
 │   ├── 02_track.py              # ✅ implemented
+│   ├── gravity.py                # Stage 6 defender distances + the metric
 │   ├── 03_identify.py           # ✅ implemented (OCR behind --ocr)
 │   ├── 04_ball_possession.py    # ✅ implemented
 │   ├── 05_calibrate.py          # ✅ implemented
-│   └── 06_aggregate.py          # stub
+│   └── 06_aggregate.py          # ✅ implemented
 ├── tools/
 │   ├── make_test_clip.py         # synthetic clip for smoke-testing
-│   └── verify.py                 # 45 checks, ground-truth + structural
+│   └── verify.py                 # 64 checks, ground-truth + structural
 ├── outputs/
 │   ├── detections/
 │   ├── tracks/
@@ -329,6 +354,37 @@ keyed by angle, you annotate once and reuse it across every game from that
 camera. Watch the reprojection error and the radar view — dots outside the
 court rectangle mean the homography is wrong.
 
+Finally, the metric (Milestone 7):
+
+```bash
+python pipeline/06_aggregate.py --game-id 0022500123
+```
+
+This writes two tables: `outputs/metrics/{game_id}_gravity.parquet`, the
+per-player deliverable, and `{game_id}_distances.parquet`, the per-frame rows
+it averaged. The second exists because the first is an average of averages and
+a surprising number in it is otherwise untraceable — the viewer's Gravity
+Results tab plots it, with the frames a player holds the ball shaded, so you
+can see whether defenders actually collapse.
+
+It prints what it excluded, which on real footage is most of the input:
+
+```
+[stage 6] shot 11: dark on offence (70% of 201 handler frames)
+[stage 6] 1365 player-frame(s) over 284 frame(s); 88 with the ball
+[stage 6] defender distance median 19.4ft, nearest 6.9ft
+[stage 6] 2 player row(s), 0 with a gravity_delta
+```
+
+Shots it cannot use are named with the reason — no calibration, a homography
+annotated on a different shot, or a handler team too split to say which side
+was defending.
+
+Add `--all-shots` to project shots the landmarks were not annotated on, and
+`--min-bucket-frames` to change how many frames a bucket needs before a
+`gravity_delta` is written rather than left null. `--all` rolls every game's
+table into `all_gravity.parquet`, weighting by frame counts.
+
 No footage yet? Generate a synthetic clip with known ground truth (3 camera
 cuts, 10 players, 1 ball) and run the whole path against it:
 
@@ -345,9 +401,10 @@ python tools/verify.py
 Regenerates the synthetic clip, runs every implemented stage over it, and
 checks the result against answers known from how the clip was built — three
 cuts at fixed frames, ten players per frame, five per kit colour. Expect
-45/45 passed; exit code is 0 only if all of them do, so it works as a gate.
-Those include the jersey-number voting rules, which are pure logic and are
-asserted against reads real footage produced — no video or OCR model needed.
+64/64 passed; exit code is 0 only if all of them do, so it works as a gate.
+Those include the jersey-number voting and the gravity arithmetic, both pure
+logic and both asserted on inputs whose answers are known by hand — no video
+or model needed.
 
 For real footage, where no ground truth exists:
 

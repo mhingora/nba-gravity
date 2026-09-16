@@ -13,7 +13,7 @@ building the whole pipeline blind before seeing any output.
 | 4 — Ball possession | **Implemented.** On the test possession the handler is visually correct wherever one is assigned; 46% of frames have a handler, and the limit is ball detection coverage, not the heuristic. |
 | 5 — Court calibration | **Done for one camera angle.** Six landmarks annotated on S_N3_HD shot 11: rms reprojection error 1.3px, worst known distance off by 0.07ft. Independently validated — 52 of 52 projected player positions land on the court, spaced 3.0-6.7ft apart. Accurate near the annotated frame only; the camera pans within a shot. |
 | 6 — Jersey OCR / identity | **Implemented.** 5 of 25 tracks on the test possession resolve a number; all 5 are correct, and the 12 tracks with no legible number are correctly left null. Two players a human can read (both #11) are missed. Viewer Tab 6 shows every crop with what OCR made of it. |
-| 7 — First end-to-end run | **Unblocked.** Stages 1-5 all produce output on real footage. Gravity needs team labels and court positions, not names, so the sparse OCR coverage does not hold it up. |
+| 7 — First end-to-end run | **Runs end to end; not closed.** Stage 6 produces `metrics/S_N3_HD_gravity.parquet` from the full chain — 1,365 player-frames, median defender distance 19.4ft. But no `gravity_delta` exists yet: one calibrated shot is 15 seconds, and neither identified player holds the ball in it. Blocked on calibrated footage volume, not on code. |
 | 8-9 — Validation, scale-up | Blocked on 7. |
 
 Coverage so far: shot segmentation has run over two full clips, but detection
@@ -108,6 +108,23 @@ spanning all 60 frames.
 - **Done when:** you have a `metrics/{game_id}_gravity.parquet` with
   plausible-looking numbers for at least a handful of players with enough
   possession volume to trust.
+- **Built, not closed.** `pipeline/gravity.py` and `06_aggregate.py` run the
+  whole chain and write both the deliverable table and the per-frame
+  distances it averages. Viewer Tab 7 plots the trace with ball-possession
+  frames shaded, which is the check that decides whether an aggregate
+  deserves to be believed.
+- What it produced on the test possession: 284 measured frames, 1,365
+  player-frames, median defender distance 19.4ft and nearest 6.9ft. Two named
+  players, whose raw gravity separates sensibly (Harper 16.4ft, Champagnie
+  24.1ft).
+- **Why it is not closed:** a `gravity_delta` needs the same player measured
+  with *and* without the ball, and in fifteen seconds neither named player is
+  ever the handler. Both halves of the shortfall are coverage, not code:
+  * only one shot is calibrated, because the camera pans within a shot and a
+    single homography does not follow it (see `09-implementation-notes.md`);
+  * jersey OCR resolves 5 tracks in 25, so most measured players are anonymous.
+- The next real step is therefore Milestone 5's propagation problem, not more
+  metric code. Everything downstream of it already works.
 
 ## Milestone 8 — Validation pass
 - Spot-check the pipeline's output against what you'd expect from watching
