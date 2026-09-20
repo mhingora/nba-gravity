@@ -38,8 +38,10 @@ from pipeline.common import (
     find_video,
     list_games,
     distances_path,
+    homographies_path,
     load_shots,
     metrics_path,
+    propagation_path,
     read_frame,
     identity_path,
     ocr_reads_path,
@@ -65,6 +67,7 @@ from pipeline.court_region import (
 )
 from pipeline.court_geometry import (
     COURT_LANDMARKS,
+    draw_court_model,
     lane_orientation_problem,
     COURT_LENGTH_FT,
     COURT_WIDTH_FT,
@@ -120,7 +123,8 @@ def load_shot_list(game_id: str, _mtime_key: float):
 
 
 @st.cache_data(show_spinner=False)
-def load_ocr_reads(path_str: str, _mtime_key: float) -> dict:
+def load_json_artifact(path_str: str, _mtime_key: float) -> dict:
+    """Any of the JSON sidecars a stage writes beside its parquet."""
     import json
 
     return json.loads(Path(path_str).read_text(encoding="utf-8"))
@@ -1051,6 +1055,9 @@ with tabs[4]:
     )
 
     cal_profiles = list_profiles()
+    # Defined up front so the camera-motion section below can mention the
+    # profile even when there is none to annotate with.
+    cal_name, stored_kp = None, {}
     if not cal_profiles:
         st.info("No court profile yet. Create one in the Tracking tab first.")
     else:
@@ -1583,6 +1590,97 @@ with tabs[4]:
                     + " --court-profile " + cal_name,
                     language="bash",
                 )
+
+    # ----------------------------------------------------------------------
+    # Propagation. One matrix cannot describe a camera that pans, so the
+    # check that matters is whether the court model still lands on the paint
+    # hundreds of frames from where it was annotated.
+    # ----------------------------------------------------------------------
+    st.divider()
+    st.markdown("**Camera motion**")
+    frames_file = homographies_path(game_id)
+    if not frames_file.exists():
+        st.info(
+            "This game has one homography per shot, which assumes the camera "
+            "holds still. It does not — measured on the test clip, the "
+            "annotated matrix is out by 1.5ft at the median across its own "
+            "shot. Propagation follows the camera frame by frame:\n\n"
+            f"`python pipeline/05_calibrate.py --game-id {game_id} "
+            f"--court-profile {cal_name or '<profile>'} --propagate`"
+        )
+    else:
+        propagated = load_parquet(str(frames_file), _mtime(frames_file))
+        settings = {}
+        if propagation_path(game_id).exists():
+            settings = load_json_artifact(
+                str(propagation_path(game_id)), _mtime(propagation_path(game_id))
+            )
+
+        motion_cols = st.columns(4)
+        motion_cols[0].metric("Frames solved", len(propagated))
+        motion_cols[1].metric(
+            "Shots reached", propagated["shot_id"].nunique(),
+            help="A shot from a different camera cannot be matched to the "
+            "reference frame, so it gets no homography — which is the "
+            "correct answer, not a gap to fill.",
+        )
+        motion_cols[2].metric(
+            "Median inliers", int(propagated["inliers"].median()),
+            help="Matched features that agreed on the camera motion. "
+            "Hundreds is healthy; the refusal threshold is 40.",
+        )
+        motion_cols[3].metric(
+            "Motion rms", f"{propagated['motion_rms_px'].median():.2f} px",
+            help="How well those matches agree with the estimated motion.",
+        )
+        if settings.get("overlay_regions"):
+            covered = sum(r["coverage"] for r in settings["overlay_regions"])
+            st.caption(
+                f"Broadcast overlay found automatically: "
+                f"{len(settings['overlay_regions'])} region(s), {covered:.1%} "
+                "of the frame, excluded from matching. Without that exclusion "
+                "every shot in a clip matches every other one on the scorebug "
+                "alone."
+            )
+
+        reachable = sorted(int(s) for s in propagated["shot_id"].unique())
+        check_shot = st.selectbox(
+            "Check a shot", reachable, key="motion_shot",
+            help="Shots the annotated frame could be matched to.",
+        )
+        shot_frames = propagated[propagated["shot_id"] == check_shot]
+        check_frame = st.select_slider(
+            "Frame",
+            options=sorted(int(f) for f in shot_frames["frame_idx"]),
+            key="motion_frame",
+        )
+        row = shot_frames[shot_frames["frame_idx"] == check_frame].iloc[0]
+        cells = [f"h{i}{j}" for i in range(3) for j in range(3)]
+        matrix = np.array([float(row[c]) for c in cells]).reshape(3, 3)
+
+        frame = get_frame(str(video_path), int(check_frame))
+        if frame is None:
+            st.warning("Could not read that frame.")
+        else:
+            drawn = draw_court_model(frame.copy(), matrix, (80, 255, 80))
+            try:
+                image_pts, court_pts, _ = parse_keypoints(stored_kp)
+                static = compute_homography(
+                    image_pts, court_pts, info.width, info.height
+                )[0]
+                drawn = draw_court_model(drawn, static, (60, 60, 255))
+            except (ValueError, KeyError):
+                # Too few or unnamed landmarks to fit the static comparison.
+                # The propagated outline is the one that matters anyway.
+                pass
+            st.image(bgr_to_rgb(drawn), width="stretch")
+            st.caption(
+                f"Frame {check_frame}: green is this frame's propagated "
+                "homography, red is the single annotated one. Green should sit "
+                "on the painted lines everywhere; red only does so near the "
+                f"frame it was annotated on. {int(row['inliers'])} inliers, "
+                f"motion rms {row['motion_rms_px']:.2f}px."
+            )
 with tabs[5]:
     st.subheader("Identity Resolution")
     st.caption(
@@ -1608,7 +1706,7 @@ with tabs[5]:
             "Re-run stages 2 and 3."
         )
     else:
-        evidence = load_ocr_reads(str(reads_path), _mtime(reads_path))
+        evidence = load_json_artifact(str(reads_path), _mtime(reads_path))
         identity = load_parquet(str(ident_path), _mtime(ident_path))
         ocr_tracks = load_parquet(str(trk_path), _mtime(trk_path))
         ocr_tracks = ocr_tracks[ocr_tracks["class"] == CLASS_PLAYER]
@@ -1903,32 +2001,38 @@ with tabs[6]:
             # decides whether the aggregate deserves to be believed.
             # ----------------------------------------------------------------
             st.markdown("**Defender distance over the possession**")
-            # Name the tracks in the picker the same way stage 6 names its
-            # rows, so a player found in the leaderboard is findable here.
+            # Label each track the way stage 6 names its rows, so a player in
+            # the leaderboard is findable here. A tracker_id is only unique
+            # *within* a shot, so the key is the pair — one player crossing
+            # several shots carries several tracker_ids, and plotting by
+            # tracker_id alone would splice different people together.
             gravity_identity = (
                 load_parquet(str(identity_path(game_id)), _mtime(identity_path(game_id)))
                 if identity_path(game_id).exists()
                 else pd.DataFrame()
             )
-            known_tracks = (
-                gravity_identity.set_index("tracker_id").to_dict("index")
-                if not gravity_identity.empty
-                else {}
+            known_tracks = {
+                (int(row.shot_id), int(row.tracker_id)): player_label(row._asdict())
+                for row in gravity_identity.itertuples()
+            } if not gravity_identity.empty else {}
+
+            def label_for(shot_id, tracker_id) -> str:
+                named = known_tracks.get((int(shot_id), int(tracker_id)))
+                return named or f"shot {int(shot_id)} trk {int(tracker_id)}"
+
+            trace = trace.assign(
+                player=[
+                    label_for(shot, track)
+                    for shot, track in zip(trace["shot_id"], trace["tracker_id"])
+                ]
             )
-            labels = {}
-            for tracker_id in sorted(int(t) for t in trace["tracker_id"].unique()):
-                record = known_tracks.get(tracker_id, {})
-                label = player_label(record) if record else None
-                labels[tracker_id] = (
-                    f"trk {tracker_id} · {label}" if label else f"trk {tracker_id} · unidentified"
-                )
             pick = st.selectbox(
-                "Player",
-                sorted(labels),
-                format_func=lambda t: labels[t],
-                key="gravity_player",
+                "Player", sorted(trace["player"].unique()), key="gravity_player",
+                help="Named players pool every track that resolved to them, "
+                "across shots. Tracks with no identity stay separate — there "
+                "is nothing to pool them by.",
             )
-            player_trace = trace[trace["tracker_id"] == pick].sort_values("frame_idx")
+            player_trace = trace[trace["player"] == pick].sort_values("frame_idx")
 
             ball_frames = player_trace[player_trace["has_ball"]]
             trace_cols = st.columns(3)

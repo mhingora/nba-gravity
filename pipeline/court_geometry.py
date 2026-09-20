@@ -206,6 +206,56 @@ def to_court_feet(matrix: np.ndarray, pixel_points: np.ndarray) -> np.ndarray:
     return _apply(matrix, np.asarray(pixel_points, dtype=np.float64))
 
 
+#
+
+# The court as line segments, in feet. Enough of it to judge an overlay by
+# eye — outline, both lanes, both free-throw lines, halfway — and no more,
+# because a drawing with every arc on it is harder to read, not easier.
+COURT_OUTLINE = [
+    [(0.0, 0.0), (COURT_WIDTH_FT, 0.0), (COURT_WIDTH_FT, COURT_LENGTH_FT),
+     (0.0, COURT_LENGTH_FT), (0.0, 0.0)],
+    [(0.0, COURT_LENGTH_FT / 2), (COURT_WIDTH_FT, COURT_LENGTH_FT / 2)],
+    [(_LANE_LEFT, 0.0), (_LANE_LEFT, FREE_THROW_FROM_BASELINE_FT),
+     (_LANE_RIGHT, FREE_THROW_FROM_BASELINE_FT), (_LANE_RIGHT, 0.0)],
+    [(_LANE_LEFT, COURT_LENGTH_FT),
+     (_LANE_LEFT, COURT_LENGTH_FT - FREE_THROW_FROM_BASELINE_FT),
+     (_LANE_RIGHT, COURT_LENGTH_FT - FREE_THROW_FROM_BASELINE_FT),
+     (_LANE_RIGHT, COURT_LENGTH_FT)],
+]
+
+
+def draw_court_model(frame, court_matrix, colour=(80, 255, 80), thickness=3):
+    """Draw the court model onto a frame through its image->court matrix.
+
+    This is the check a person can actually make: the painted lines are
+    ground truth sitting in the picture, so a homography is right exactly
+    when the drawing lands on them. Numbers cannot say that — a fit can have
+    a tidy residual and still describe the wrong piece of court.
+    """
+    import cv2
+
+    matrix = np.asarray(court_matrix, dtype=np.float64)
+    to_image = np.linalg.inv(matrix)
+    for segment in COURT_OUTLINE:
+        points = _apply(to_image, np.array(segment, dtype=np.float64))
+        for start, end in zip(points, points[1:]):
+            if not np.all(np.isfinite([start, end])):
+                continue
+            # A point behind the camera projects to an absurd coordinate;
+            # drawing to it throws rather than being clipped.
+            if np.max(np.abs([start, end])) > 1e5:
+                continue
+            cv2.line(
+                frame,
+                (int(start[0]), int(start[1])),
+                (int(end[0]), int(end[1])),
+                colour,
+                thickness,
+                cv2.LINE_AA,
+            )
+    return frame
+
+
 def worst_landmark(
     keypoints: dict, frame_width: float, frame_height: float
 ) -> tuple[str, float, float] | None:

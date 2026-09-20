@@ -63,16 +63,56 @@ the bar is four agreeing reads out of 24 sampled frames and a strict majority
 of what survives. A wrong number attaches one player's name to another
 player's movement, so refusing is the cheaper error.
 
-**The first end-to-end numbers.** The full chain on that possession measures
-284 frames and 1,365 player-frames, at a median defender distance of 19.4 ft
-(nearest defender 6.9 ft) — the right order of magnitude for half-court
-basketball. The two players identified by name separate the way the footage
-looks:
+**One homography does not survive a panning camera.** The broadcast camera
+pans continuously *within* a single camera shot, so a matrix fitted to one
+annotated frame drifts everywhere else. Measured against the painted court by
+template-matching the annotated landmarks — a check that knows nothing about
+either homography:
 
-| | frames on court | defenders (mean) | nearest defender |
+| | median position error | >150 frames from the annotated one |
+|---|---|---|
+| one matrix per shot | **1.49 ft** | 2.17 ft |
+| propagated per frame | **0.03 ft** | 0.03 ft |
+
+`--propagate` matches every frame back to the annotated frame and composes the
+camera motion with the annotated homography. It does not drift, because
+nothing is chained — each frame is measured against the reference directly.
+
+The catch is subtler than it looks: unmasked, **all 31 other shots of the clip
+"matched" the reference**, including baseline closeups sharing no court pixels
+at all. The scorebug sits at identical screen coordinates in every frame, so
+it matches itself across a cut and RANSAC happily reports that as camera
+motion. Masking it is what makes refusal possible — and the mask is found the
+same way the problem was: the overlay is the only thing that survives a cut
+without moving. Masked, 24 shots are refused with 5-10 inliers, while the 7
+genuinely from the same camera keep 92-219 and get calibrated for free.
+
+**The first end-to-end numbers.** Run over the whole 4-minute clip — 7,621
+tracked frames, 417 tracks, 126 jersey numbers read — the chain measures 914
+frames and 3,578 player-frames at a median defender distance of 20.9 ft
+(nearest defender 7.3 ft), for 6 identified players.
+
+Three of them have frames both with and without the ball, which is what a
+gravity delta needs:
+
+| player | with ball | without | gravity_delta |
 |---|---|---|---|
-| Harper (#2) | 278 | **16.4 ft** | 5.5 ft |
-| Champagnie (#30) | 245 | **24.1 ft** | 8.7 ft |
+| #24 (SAS) | 23 f | 613 f | **+6.3 ft** |
+| Harper (#2) | 25 f | 482 f | +0.0 ft |
+| #4 (SAS) | 47 f | 63 f | −2.8 ft |
+
+**Those numbers are not trustworthy, and the pipeline says so.** The spec asks
+for 100 frames in each bucket before quoting a delta, and the best-covered
+player here has 47 — so by default the table writes `gravity_delta` as null
+and reports the frame counts beside it. The figures above come from
+`--min-bucket-frames 20`, which is how you look at a number you do not yet
+believe. Getting more is a matter of footage, not code: only 178 frames in
+this clip have an identified ball handler on a measured frame.
+
+Harper is the interesting case: his five-defender average is flat with and
+without the ball, while his *nearest* defender closes by 1.7 ft. That is
+exactly the divergence `05-metrics-and-analysis.md` predicts between whole-
+defence collapse and on-ball pressure, and it is why both are reported.
 
 Getting there meant refusing three tempting shortcuts. The handler's team
 flips four times in those fifteen seconds, but the broadcast shot clock counts
@@ -98,11 +138,11 @@ calibration, jersey identity and the metric itself. One camera angle is
 calibrated to 1.3px reprojection error, validated by projecting tracked
 players onto the court, so positions are in feet rather than pixels.
 
-The research question is still unanswered. `gravity_delta` needs the same
-player measured with *and* without the ball, and the one calibrated shot is
-fifteen seconds long — neither identified player holds the ball in it. What
-the chain does produce is the other half of the metric: how tightly defenders
-play a given player overall.
+The research question is not answered yet, but it is now a question of
+sample size rather than of machinery. Every stage runs over a whole clip, and
+`gravity_delta` comes out for three players — on 23 to 47 frames of
+possession each, against the 100 the spec asks for. More footage through the
+same chain is what closes the gap.
 
 Detection and tracking have run on **one hand-picked possession** — 465 of
 7,786 frames, about 6% of a single clip. Shot segmentation has run over full
@@ -142,6 +182,7 @@ nba-gravity/
 │   ├── court_geometry.py         # Stage 5 landmarks + homography
 │   ├── 01_detect.py             # ✅ implemented
 │   ├── 02_track.py              # ✅ implemented
+│   ├── camera_motion.py          # Stage 5 following the camera between frames
 │   ├── gravity.py                # Stage 6 defender distances + the metric
 │   ├── 03_identify.py           # ✅ implemented (OCR behind --ocr)
 │   ├── 04_ball_possession.py    # ✅ implemented
@@ -149,7 +190,7 @@ nba-gravity/
 │   └── 06_aggregate.py          # ✅ implemented
 ├── tools/
 │   ├── make_test_clip.py         # synthetic clip for smoke-testing
-│   └── verify.py                 # 64 checks, ground-truth + structural
+│   └── verify.py                 # 74 checks, ground-truth + structural
 ├── outputs/
 │   ├── detections/
 │   ├── tracks/
@@ -354,6 +395,19 @@ keyed by angle, you annotate once and reuse it across every game from that
 camera. Watch the reprojection error and the radar view — dots outside the
 court rectangle mean the homography is wrong.
 
+One matrix per shot assumes a camera that holds still. Follow it instead:
+
+```bash
+python pipeline/05_calibrate.py --game-id 0022500123 --court-profile msg_main --propagate
+```
+
+Every frame that can be matched back to the annotated frame gets its own
+homography, which also calibrates other shots from the same camera without
+annotating them. Frames it cannot match — a different camera, a replay — are
+absent from the table, and Stage 6 leaves them unmeasured. Check it in the
+viewer's Court Calibration tab: the court model drawn through each frame's own
+matrix should sit on the painted lines the whole way through a shot.
+
 Finally, the metric (Milestone 7):
 
 ```bash
@@ -401,7 +455,7 @@ python tools/verify.py
 Regenerates the synthetic clip, runs every implemented stage over it, and
 checks the result against answers known from how the clip was built — three
 cuts at fixed frames, ten players per frame, five per kit colour. Expect
-64/64 passed; exit code is 0 only if all of them do, so it works as a gate.
+74/74 passed; exit code is 0 only if all of them do, so it works as a gate.
 Those include the jersey-number voting and the gravity arithmetic, both pure
 logic and both asserted on inputs whose answers are known by hand — no video
 or model needed.

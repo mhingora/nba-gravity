@@ -19,6 +19,14 @@ poor, exclude the shot rather than trust a stale homography. This is a real
 limitation of v1; a per-frame dynamic homography is a plausible v2 upgrade if
 static-camera assumption proves too limiting.
 
+> **Built, and needed sooner than "v2".** `reprojection_error_px` turned out
+> to be no signal at all here: it is the residual on the annotated frame, and
+> every shot's file carries the same value, so it cannot flag a shot the
+> matrix never described. The camera also pans *within* a shot, not just
+> between shots — measured at 1.49 ft of median position error across the
+> annotated shot itself. `05_calibrate.py --propagate` is the per-frame
+> dynamic homography, and it brings that to 0.03 ft.
+
 ## Player occlusion in the paint
 **Problem:** five offensive + five defensive players clustering near the rim
 causes heavy bounding-box overlap, which both degrades detection confidence

@@ -9,6 +9,7 @@ code as it stands.
 ```
 app.py                          Streamlit viewer, all 7 tabs live + polygon tuner
 pipeline/common.py              paths, schema constants, video IO, parquet writer
+                                (incl. walk_frames, the sequential frame reader)
 pipeline/shot_boundaries.py     Stage 0 cut detection
 pipeline/detector.py            Stage 1 detector wrappers
 pipeline/court_region.py        court polygon test + camera-angle profiles
@@ -22,6 +23,7 @@ pipeline/03_identify.py         Stage 3 CLI (Part A always, Part B on --ocr)
 pipeline/possession.py          Stage 4 — ball selection + possession logic
 pipeline/04_ball_possession.py  Stage 4 CLI
 pipeline/court_geometry.py      Stage 5 — court landmarks, homography, checks
+pipeline/camera_motion.py       Stage 5 — following the camera between frames
 pipeline/05_calibrate.py        Stage 5 CLI
 pipeline/gravity.py             Stage 6 — defender distances + the metric
 pipeline/06_aggregate.py        Stage 6 CLI
@@ -244,6 +246,43 @@ cannot reproduce the lane width, which is the failure that matters.
 worse than none: it produces confident, wrong distances that look plausible
 downstream.
 
+**`--propagate` gives every frame its own homography.** The spec's model is
+one matrix per camera angle, recomputed only when a shot looks off. This
+footage breaks that model within a single shot: the camera pans continuously,
+so the annotated matrix is out by **1.49 ft at the median** across the very
+shot it was fitted on (measured by template-matching the annotated landmarks
+in each frame — a check that knows nothing about either homography).
+Propagation matches every frame back to the annotated frame and composes the
+two, which brings that to **0.03 ft**, and the error does not grow with
+distance from the reference because nothing is chained — 2.17 ft against
+0.03 ft on frames more than 150 away from the annotated one.
+
+**Matching is direct to the reference, never neighbour to neighbour.**
+Chaining always has overlap to work with but accumulates error invisibly.
+Direct matching either succeeds or fails loudly, and it held across the whole
+test shot (93-450 inliers at ±230 frames), so the chain buys nothing.
+
+**The broadcast overlay is detected, not configured.** Unmasked, all 31 other
+shots of the test clip "matched" the reference with about a hundred inliers
+each — including baseline closeups sharing no court pixels — because the
+scorebug sits at identical screen coordinates in every frame and matches
+itself across a cut. That property is also how to find it: keep the matches
+that survive a cut without moving. Masked, 24 of those shots are refused with
+5-10 inliers while the 7 genuinely from the same camera keep 92-219. No
+per-broadcaster rectangle to maintain.
+
+**Propagation replaces the annotated-shot rule rather than extending it.** It
+reaches whatever it can match, so a later shot from the same camera gets
+calibrated without anyone annotating it — coverage is decided by evidence
+instead of by shot id.
+
+**Every stage that samples video walks it forwards.** `common.walk_frames`
+decodes straight through and grabs past the frames nobody asked for, rather
+than seeking to each one. Seeking is the expensive part of reading video: with
+per-frame seeks, stage 3 spent eleven minutes without finishing its first step
+on a 4-minute clip, and finished in about two afterwards. Stage 3A's docstring
+had claimed a sequential pass for a while without the code doing one.
+
 ### Stage 6 deviations
 
 **Two artifacts, not one.** The spec names only the metrics table. Stage 6
@@ -277,6 +316,15 @@ spec itself calls raw gravity — and the frame counts beside it say exactly why
 the delta is missing. Silently dropping the row looks identical to the player
 never being seen.
 
+**Offence and defence are restricted to the two real team labels.** Stage 3's
+third label, `other`, means the colour evidence favoured neither kit. Treating
+"not the offence" as "the defence" counted those tracks among the five
+defenders, and a frame whose handler was an `other` track got a vote on which
+team was attacking — over a whole clip that produced a shot reported as "other
+on offence", after which both teams counted as defenders. Fixing it moved one
+shot's offence call from 79% to 100% and raised measured frames from 538 to
+914.
+
 **Only the annotated shot is aggregated by default.** Stage 5 writes the same
 homography to every shot, so `reprojection_error_px` cannot distinguish a
 shot the matrix was fitted to from one it was copied to. Stage 5 now records
@@ -297,25 +345,17 @@ so *it* reported 0.3px while correctly placed landmarks reported over 600px.
 Refitting without each landmark in turn found it immediately (391px with it,
 1.3px without), and `worst_landmark()` now does that automatically whenever a
 fit looks bad.
-- **One homography per camera angle is an approximation this footage
-  violates.** The spec assumes a camera position repeats across shots and
-  suggests recomputing only if a shot looks off. Measured on shot 11 of the
-  test clip, the broadcast camera pans continuously *within* a single shot:
-  an identical fixed crop taken at frames 3097, 3300 and 3561 shows three
-  different pieces of court. A static homography is therefore only accurate
-  near the frame it was annotated on, and degrades across the rest of the
-  shot. The standard fix is to annotate one frame and then propagate the
-  homography frame to frame by estimating camera motion from static court
-  features — the same technique BoT-SORT's camera motion compensation uses.
-  Until that exists, treat projected distances as approximate and prefer
-  annotating a frame near the middle of the possession being measured.
-- **No gravity_delta exists yet.** The full chain runs and writes the
-  deliverable table, but the delta needs the same player measured with and
-  without the ball. On the one calibrated shot — fifteen seconds — neither
-  identified player is ever the tracked handler, so both rows carry raw
-  gravity only (Harper 16.4ft, Champagnie 24.1ft over 278 and 245 frames).
-  This is coverage, not arithmetic: it clears as soon as more shots are
-  calibrated.
+- **Propagation covers one camera, not every camera.** `--propagate` solves
+  the pan-within-a-shot problem and reaches other shots from the same camera
+  for free, but a second camera angle still needs its own annotated frame.
+  Nothing classifies camera angles, so there is no automatic way to tell which
+  shots would need one.
+- **The gravity deltas that exist are under-sampled.** Three players have
+  frames in both buckets, on 23 to 47 frames of possession against the spec's
+  floor of 100, so the default run writes their deltas as null. The limit is
+  possession volume: 178 frames in the whole clip have an identified handler
+  on a measured frame. More clips through the same chain is the fix; no code
+  is in the way.
 - Jersey OCR resolves 5 of 25 tracks on the test possession. All 5 are
   correct and the 12 tracks with nothing legible are correctly left null, but
   two tracks a human can read are missed — both are #11, whose repeated digit

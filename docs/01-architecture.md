@@ -1,11 +1,11 @@
 # Architecture
 
-> **Status.** The caching convention, shot segmentation and per-shot tracking
-> described here are implemented (Stages 0-2). Identity resolution, calibration,
-> possession and aggregation are still design only. One correction: `sv.ByteTrack`
-> is deprecated and due for removal in supervision 0.31. Tracking now comes
-> from the `trackers` package (`--tracker`, default `bytetrack`), so
-> supervision is no longer pinned. See `09-implementation-notes.md`.
+> **Status.** Every stage described here is implemented and has run on real
+> broadcast footage. Two corrections: `sv.ByteTrack` is deprecated and due for
+> removal in supervision 0.31, so tracking comes from the `trackers` package
+> (`--tracker`, default `bytetrack`); and a homography is computed per *frame*
+> rather than per angle, because the camera pans within a shot. See
+> `09-implementation-notes.md`.
 
 ## Goals and non-goals
 
@@ -93,7 +93,9 @@ those back into a consistent player identity across cuts, not tracking itself.
 Tag each shot segment with a rough camera-angle label (e.g. `main_baseline`,
 `sideline`, `isolation_closeup`, `replay`). This can start as a manual lookup
 or a simple classifier later. Angle tagging matters because:
-- Court homography is computed per angle type, not per shot.
+- Court homography starts from one annotated frame per angle, then follows
+  the camera frame by frame (`05_calibrate.py --propagate`). Per angle is
+  the unit of *annotation*, not of accuracy.
 - Isolation/closeup shots usually don't contain enough of the court or enough
   players to be useful for the gravity metric — filter them out early rather
   than letting them inject noise.

@@ -47,7 +47,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from pipeline.common import CLASS_PLAYER, ROSTERS_DIR
+from pipeline.common import CLASS_PLAYER, ROSTERS_DIR, walk_frames
 
 # Torso window as a fraction of the player box. Below the head, above the
 # shorts: where a back or front number sits.
@@ -201,11 +201,7 @@ def read_track_numbers(
 
     results: dict[tuple[int, int], TrackReads] = {}
     try:
-        for frame_idx in sorted(wanted):
-            capture.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            ok, frame = capture.read()
-            if not ok:
-                continue
+        for frame_idx, frame in walk_frames(capture, wanted):
             for shot_id, tracker_id, box in wanted[frame_idx]:
                 track = results.setdefault((shot_id, tracker_id), TrackReads())
                 crop = torso_crop(frame, box)

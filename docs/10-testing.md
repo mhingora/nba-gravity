@@ -19,12 +19,14 @@ checks the output against answers that are known because the clip was built
 with them: three cuts at fixed frames, ten players per frame, five per kit
 colour. Exit code is 0 only if everything passes, so it works as a gate.
 
-Expect **64/64 passed**. Run it after any change to the pipeline; if a check
+Expect **74/74 passed**. Run it after any change to the pipeline; if a check
 that used to pass now fails, that change broke something.
 
 What it proves: schemas, shot segmentation, per-shot tracker resets, team
 clustering, possession plumbing, the homography maths, the jersey-number
-voting rules, and the gravity arithmetic. The last two are pure logic, so they
+voting rules, the gravity arithmetic, and camera-motion propagation — that
+last one on a synthetic frame warped by a matrix of our choosing, so the
+estimate can be checked against the shift it was handed. The last two are pure logic, so they
 are asserted on inputs whose answers are known by hand — the OCR reads real
 footage produced, and five defenders placed at 5, 10, 15, 20 and 25 feet — and
 need neither a video nor a model. What it does **not** prove: anything about
@@ -182,6 +184,31 @@ residual. The tab checks for that crossing and refuses it.
   so accuracy is best near the annotated frame and worst at the extremes.
   Check the radar at the start, middle and end of a shot rather than trusting
   one frame.
+
+#### Camera motion
+
+At the bottom of the same tab, once `--propagate` has run. One homography
+assumes the camera holds still; it does not, so this is where you check that
+the fix worked.
+
+```
+python pipeline/05_calibrate.py --game-id S_N3_HD --court-profile msg_main_ebard --propagate
+```
+
+- Pick a shot and scrub the frame slider. The **green** outline is that
+  frame's own homography, the **red** one is the single annotated matrix.
+  Green should sit on the painted lines everywhere in the shot; red only does
+  so near the frame it was annotated on, and visibly slides off elsewhere.
+- **Shots reached** counts shots other than the annotated one that matched.
+  Those are other views from the same camera, calibrated for free. A shot from
+  a different camera cannot match and correctly gets nothing.
+- **Median inliers** in the hundreds is healthy. Anything near the refusal
+  threshold of 40 means the matcher is struggling, and frames it refuses are
+  simply absent from the table.
+- If **no overlay regions** were found, the caption says so. That happens on a
+  clip with no camera cuts, and it matters: unmasked, the scorebug makes every
+  frame match every other frame, so propagation would calibrate a closeup as
+  if it were the wide camera.
 
 ### Tab 6 — Identity Resolution
 

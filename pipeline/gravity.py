@@ -23,11 +23,14 @@ people in real positions; the surplus is one player carrying two tracker_ids
 Frames are therefore kept only when exactly the expected number of defenders
 is tracked, which on the test possession is 294 of 464 frames.
 
-**One homography does not describe every shot.** Stage 5 writes the same
-matrix to every shot of a game because they share a camera angle, and the
-reprojection error it records is the fit residual from the annotated frame —
-identical in the file for a shot the matrix was never checked against. By
-default only the shot the landmarks were annotated on is aggregated.
+**One homography does not describe every shot, or even a whole shot.** Stage 5
+writes the same matrix to every shot of a game, and the reprojection error it
+records is the fit residual from the annotated frame — identical in the file
+for a shot the matrix was never checked against. Measured against the painted
+court, that static matrix is out by 1.49 ft at the median across the annotated
+shot; `05_calibrate.py --propagate` follows the camera instead and brings that
+to 0.03 ft. Per-frame matrices are used wherever they exist, and a frame
+propagation could not solve is left unmeasured rather than guessed.
 """
 
 from __future__ import annotations
@@ -38,8 +41,9 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from pipeline.common import CLASS_PLAYER, calibration_path
+from pipeline.common import CLASS_PLAYER, calibration_path, homographies_path
 from pipeline.court_geometry import COURT_LENGTH_FT, COURT_WIDTH_FT, to_court_feet
+from pipeline.team_clustering import TEAM_OTHER
 
 # Players stand a little outside the lines — inbounding, or a step over the
 # baseline — so the court test is generous. It is here to drop the crowd and
@@ -145,7 +149,12 @@ def offensive_team(
             teams.get((int(shot_id), int(tracker_id)))
             for tracker_id in handlers["ball_handler_tracker_id"]
         ]
-        labels = [label for label in labels if label]
+        # `other` is the cluster for tracks whose colour favoured neither kit —
+        # referees, coaches, anyone the detector picked up. A frame whose
+        # handler is one of those says nothing about which team is attacking,
+        # and letting it vote once made a whole shot come back with "other on
+        # offence", which then made *both* teams count as defenders.
+        labels = [label for label in labels if label and label != TEAM_OTHER]
         shot_id = int(shot_id)
         if not labels:
             calls[shot_id] = OffenseCall(
@@ -168,12 +177,52 @@ def offensive_team(
     return calls
 
 
+@dataclass
+class Homographies:
+    """Which matrix takes a frame's pixels to court feet.
+
+    A propagated matrix belongs to one frame and follows the camera; a shot
+    matrix is the annotated frame's, reused across a shot the camera did not
+    hold still for. The two are not interchangeable — one is accurate to
+    0.03 ft and the other to 1.49 ft — so a propagated game uses *only* its
+    per-frame matrices, and a frame propagation refused stays unmeasured
+    rather than silently falling back to the worse answer. The shot matrices
+    are for games that have not been propagated at all.
+    """
+
+    per_frame: dict[int, np.ndarray]
+    per_shot: dict[int, np.ndarray]
+
+    def for_frame(self, shot_id: int, frame_idx: int) -> np.ndarray | None:
+        if self.per_frame:
+            return self.per_frame.get(int(frame_idx))
+        return self.per_shot.get(int(shot_id))
+
+    def covers(self, shot_id: int) -> bool:
+        return bool(self.per_shot.get(int(shot_id)) is not None or self.per_frame)
+
+
+def load_propagated(game_id: str) -> dict[int, np.ndarray]:
+    """Per-frame homographies from `05_calibrate.py --propagate`, if any."""
+    path = homographies_path(game_id)
+    if not path.exists():
+        return {}
+    table = pd.read_parquet(path)
+    cells = [f"h{i}{j}" for i in range(3) for j in range(3)]
+    return {
+        int(row.frame_idx): np.array(
+            [getattr(row, cell) for cell in cells], dtype=np.float64
+        ).reshape(3, 3)
+        for row in table.itertuples()
+    }
+
+
 def defender_distances(
     tracks: pd.DataFrame,
     identity: pd.DataFrame,
     possession: pd.DataFrame,
     offense: dict[int, OffenseCall],
-    matrices: dict[int, np.ndarray],
+    homographies: Homographies,
     defenders_required: int = EXPECTED_DEFENDERS,
 ) -> pd.DataFrame:
     """One row per (frame, offensive player): how far the defence is, in feet."""
@@ -185,13 +234,21 @@ def defender_distances(
     )
 
     rows = []
-    for shot_id, shot_players in players.groupby("shot_id"):
-        shot_id = int(shot_id)
+    for (shot_id, frame_idx), frame_players in players.groupby(
+        ["shot_id", "frame_idx"]
+    ):
+        shot_id, frame_idx = int(shot_id), int(frame_idx)
         call = offense.get(shot_id)
-        if call is None or call.team_id is None or shot_id not in matrices:
+        if call is None or call.team_id is None:
+            continue
+        # Projection is per frame because the camera moves within a shot. A
+        # frame propagation could not solve gets no matrix and no row, which
+        # is the right answer: its position on the court is unknown.
+        matrix = homographies.for_frame(shot_id, frame_idx)
+        if matrix is None:
             continue
 
-        positioned = project_to_court(shot_players, matrices[shot_id])
+        positioned = project_to_court(frame_players, matrix)
         positioned = positioned[on_court(positioned)]
         positioned = positioned.assign(
             team_id=[
@@ -200,41 +257,43 @@ def defender_distances(
             ]
         )
 
-        for frame_idx, frame_rows in positioned.groupby("frame_idx"):
-            defence = frame_rows[
-                (frame_rows["team_id"].notna())
-                & (frame_rows["team_id"] != call.team_id)
-            ]
-            # A defence of four is a missed player and a defence of eight is
-            # one player tracked twice; neither average means what the metric
-            # says it means.
-            if len(defence) != defenders_required:
-                continue
-            spots = defence[["court_x", "court_y"]].to_numpy()
+        # Defenders are the *other team*, not everyone who is not the offence:
+        # an unresolved track standing on the court would otherwise be counted
+        # as a defender and pull the average toward wherever it happens to be.
+        defence = positioned[
+            positioned["team_id"].notna()
+            & (positioned["team_id"] != call.team_id)
+            & (positioned["team_id"] != TEAM_OTHER)
+        ]
+        # A defence of four is a missed player and a defence of eight is one
+        # player tracked twice; neither average means what the metric says.
+        if len(defence) != defenders_required:
+            continue
+        spots = defence[["court_x", "court_y"]].to_numpy()
 
-            handler = handler_of.get((shot_id, int(frame_idx)))
-            attack = frame_rows[frame_rows["team_id"] == call.team_id]
-            for row in attack.itertuples():
-                gaps = np.hypot(spots[:, 0] - row.court_x, spots[:, 1] - row.court_y)
-                rows.append(
-                    {
-                        "game_id": row.game_id,
-                        "shot_id": shot_id,
-                        "frame_idx": int(frame_idx),
-                        "tracker_id": int(row.tracker_id),
-                        "team_id": call.team_id,
-                        "court_x": float(row.court_x),
-                        "court_y": float(row.court_y),
-                        "has_ball": bool(
-                            handler is not None
-                            and pd.notna(handler)
-                            and int(handler) == int(row.tracker_id)
-                        ),
-                        "n_defenders": len(defence),
-                        "avg_defender_distance_ft": float(gaps.mean()),
-                        "nearest_defender_distance_ft": float(gaps.min()),
-                    }
-                )
+        handler = handler_of.get((shot_id, frame_idx))
+        attack = positioned[positioned["team_id"] == call.team_id]
+        for row in attack.itertuples():
+            gaps = np.hypot(spots[:, 0] - row.court_x, spots[:, 1] - row.court_y)
+            rows.append(
+                {
+                    "game_id": row.game_id,
+                    "shot_id": shot_id,
+                    "frame_idx": frame_idx,
+                    "tracker_id": int(row.tracker_id),
+                    "team_id": call.team_id,
+                    "court_x": float(row.court_x),
+                    "court_y": float(row.court_y),
+                    "has_ball": bool(
+                        handler is not None
+                        and pd.notna(handler)
+                        and int(handler) == int(row.tracker_id)
+                    ),
+                    "n_defenders": len(defence),
+                    "avg_defender_distance_ft": float(gaps.mean()),
+                    "nearest_defender_distance_ft": float(gaps.min()),
+                }
+            )
 
     return pd.DataFrame(rows, columns=DISTANCE_COLUMNS)
 

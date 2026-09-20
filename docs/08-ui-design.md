@@ -135,6 +135,13 @@ where do they break?
   homography is behaving (do the dots roughly match where players actually
   are on the court?).
 
+> **Also in Tab 5: camera motion.** One homography per shot assumes a camera
+> that holds still, and this one pans within a shot. Once
+> `05_calibrate.py --propagate` has run, the tab draws the court model through
+> each frame's *own* homography alongside the single annotated one, so the
+> check is direct: the propagated outline should sit on the painted lines
+> everywhere in a shot, and the static one visibly slides off.
+
 ## Tab 6 — Identity Resolution Viewer
 
 - Per track: show the sampled OCR crops, each crop's individual OCR read,

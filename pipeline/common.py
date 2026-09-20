@@ -105,6 +105,21 @@ def calibration_path(game_id: str, shot_id: int) -> Path:
     return CALIBRATION_DIR / f"{game_id}_{shot_id}.json"
 
 
+def homographies_path(game_id: str) -> Path:
+    """Per-frame homographies, written by `05_calibrate.py --propagate`.
+
+    One matrix per shot is an approximation the footage violates — the camera
+    pans within a shot — so propagation carries the annotated frame's
+    homography to every frame it can reach by camera motion.
+    """
+    return CALIBRATION_DIR / f"{game_id}_homographies.parquet"
+
+
+def propagation_path(game_id: str) -> Path:
+    """Settings and overlay regions behind a propagation run."""
+    return CALIBRATION_DIR / f"{game_id}_homographies.json"
+
+
 def metrics_path(game_id: str) -> Path:
     return METRICS_DIR / f"{game_id}_gravity.parquet"
 
@@ -195,6 +210,36 @@ def video_info(video_path: Path) -> VideoInfo:
         )
     finally:
         cap.release()
+
+
+def walk_frames(capture, frame_indices):
+    """Yield `(frame_idx, frame)` for the wanted frames, decoding forwards.
+
+    Seeking is the expensive part of reading video: jumping to a frame costs
+    far more than decoding the next one. Every stage that samples a video
+    wants thousands of scattered frames, and asking for each by seek turns a
+    five-minute pass over a clip into a thirty-minute one — measured, after
+    stage 3 spent eleven minutes without finishing its first step.
+
+    So walk the file once in order, grabbing past the frames nobody asked
+    for. `grab` decodes without converting to an array, which is most of the
+    saving. The caller owns the capture, because callers usually need it for
+    something else too.
+    """
+    wanted = sorted({int(index) for index in frame_indices})
+    if not wanted:
+        return
+    capture.set(cv2.CAP_PROP_POS_FRAMES, wanted[0])
+    position = wanted[0]
+    for target in wanted:
+        while position < target:
+            if not capture.grab():
+                return
+            position += 1
+        ok, frame = capture.read()
+        position += 1
+        if ok:
+            yield target, frame
 
 
 def read_frame(video_path: Path, frame_idx: int):

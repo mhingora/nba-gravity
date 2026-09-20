@@ -26,6 +26,8 @@ import cv2
 import numpy as np
 import pandas as pd
 
+from pipeline.common import walk_frames
+
 TEAM_LIGHT = "light"
 TEAM_DARK = "dark"
 TEAM_OTHER = "other"
@@ -131,11 +133,7 @@ def track_features(
 
     collected: dict[tuple[int, int], list[np.ndarray]] = {}
     try:
-        for frame_idx in sorted(wanted):
-            capture.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            ok, frame = capture.read()
-            if not ok:
-                continue
+        for frame_idx, frame in walk_frames(capture, wanted):
             for shot_id, tracker_id, box in wanted[frame_idx]:
                 crop = crop_torso(frame, box)
                 if crop is None:

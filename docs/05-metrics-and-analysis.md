@@ -111,21 +111,43 @@ shot, but every shot of a game gets the same matrix, so its
 annotated on. Only the annotated shot is aggregated unless `--all-shots` says
 otherwise.
 
-### What one possession can and cannot produce
+**Referees are not defenders.** Stage 3 labels a track whose colour favours
+neither kit as `other`. Treating "not the offence" as "the defence" quietly
+counted those tracks among the five defenders, and let a frame whose *handler*
+was an `other` track vote on which team was attacking — on a whole clip that
+produced a shot reported as "other on offence", which makes both teams
+defenders. Offence votes and defender sets are now restricted to the two real
+team labels.
 
-Running the whole chain on the test possession gives 1,365 player-frames over
-284 measured frames, a median defender distance of 19.4 ft and a median
-nearest defender of 6.9 ft — the right order of magnitude for half-court
-basketball. Two players are identified well enough to name, and their raw
-gravity separates the way watching the footage suggests: Harper 16.4 ft,
-Champagnie 24.1 ft.
+### What the clip produces
 
-No `gravity_delta` is computable, because neither identified player is ever
-the tracked ball handler in those fifteen seconds. That is not a bug to fix in
-the metric; it is the coverage the footage provides. A delta needs the same
-player measured both with and without the ball, which needs possessions, not a
-possession — and more possessions need more calibrated shots, which is the
-open problem in `09-implementation-notes.md`.
+Over the whole 4-minute clip — 7,621 tracked frames, 417 tracks, 126 jersey
+numbers read, 15 shots calibrated by propagation — the chain measures 914
+frames and 3,578 player-frames, at a median defender distance of 20.9 ft and a
+median nearest defender of 7.3 ft. Six players are identified well enough to
+carry a row.
+
+Three of them have frames in both buckets:
+
+| player | with ball | without ball | gravity_delta | nearest-defender delta |
+|---|---|---|---|---|
+| #24 (SAS) | 23 | 613 | +6.27 ft | −2.68 ft |
+| Harper (#2) | 25 | 482 | +0.01 ft | +1.65 ft |
+| #4 (SAS) | 47 | 63 | −2.75 ft | −2.18 ft |
+
+Every one of those is below the 100-frame floor this document asks for, so the
+default run writes `gravity_delta` as null and reports the counts; the table
+above comes from `--min-bucket-frames 20`. Treat it as a demonstration that
+the arithmetic reaches the end, not as a measurement of anybody's gravity.
+
+Harper is the case this document predicted: his five-defender average barely
+moves when he catches the ball, while his nearest defender closes by 1.7 ft.
+Whole-defence collapse and on-ball pressure are different things, and reporting
+only the first would have shown nothing at all.
+
+The limit is now possession volume, not calibration: only 178 frames in the
+clip have an identified handler on a measured frame. More clips through the
+same chain is what pushes players past the floor.
 
 ## Suggested output views
 

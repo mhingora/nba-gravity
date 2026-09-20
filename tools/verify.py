@@ -209,7 +209,62 @@ def structural_checks(checker: Checker, game_id: str) -> None:
         distances = possession["ball_distance_px"].dropna()
         checker.check("ball_distance_px is never negative", bool((distances >= 0).all()))
 
+    propagation_checks(checker, game_id)
     metrics_checks(checker, game_id, players)
+
+
+def propagation_checks(checker: Checker, game_id: str) -> None:
+    """The per-frame homography table, when a game has been propagated."""
+    from pipeline.camera_motion import MIN_INLIERS
+    from pipeline.common import homographies_path
+
+    path = homographies_path(game_id)
+    if not path.exists():
+        checker.note(
+            f"{game_id}: no per-frame homographies — one matrix per shot is "
+            "in use, which assumes a camera that holds still"
+        )
+        return
+
+    table = pd.read_parquet(path)
+    cells = [f"h{i}{j}" for i in range(3) for j in range(3)]
+    check_schema(
+        checker,
+        table,
+        ["game_id", "shot_id", "frame_idx", *cells, "inliers", "matches",
+         "motion_rms_px"],
+        "homographies",
+    )
+    if table.empty:
+        checker.note(f"{game_id}: propagation solved no frame")
+        return
+
+    checker.check(
+        "one homography per frame, no duplicates",
+        not table["frame_idx"].duplicated().any(),
+    )
+    checker.check(
+        f"every solved frame cleared the {MIN_INLIERS}-inlier bar",
+        bool((table["inliers"] >= MIN_INLIERS).all()),
+        f"worst {int(table['inliers'].min())}",
+    )
+    matrices = table[cells].to_numpy().reshape(-1, 3, 3)
+    checker.check(
+        "every matrix is finite",
+        bool(np.isfinite(matrices).all()),
+    )
+    # A singular matrix cannot be inverted, and the viewer inverts every one
+    # of these to draw the court back onto the frame.
+    determinants = np.linalg.det(matrices)
+    checker.check(
+        "every matrix can be inverted",
+        bool((np.abs(determinants) > 1e-12).all()),
+        f"smallest |det| {np.abs(determinants).min():.2e}",
+    )
+    checker.check(
+        "inliers never exceed the matches they came from",
+        bool((table["inliers"] <= table["matches"]).all()),
+    )
 
 
 def metrics_checks(checker: Checker, game_id: str, players: pd.DataFrame) -> None:
@@ -374,6 +429,7 @@ def gravity_checks(checker: Checker) -> None:
     `homography_checks` already covers.
     """
     from pipeline.gravity import (
+        Homographies,
         aggregate_players,
         combine_games,
         defender_distances,
@@ -391,9 +447,8 @@ def gravity_checks(checker: Checker) -> None:
         f"got {offense[0].team_id}",
     )
 
-    distances = defender_distances(
-        tracks, identity, possession, offense, {0: identity_matrix}
-    )
+    flat = Homographies(per_frame={}, per_shot={0: identity_matrix})
+    distances = defender_distances(tracks, identity, possession, offense, flat)
     checker.check(
         "one row per offensive player per frame",
         len(distances) == 1,
@@ -423,7 +478,7 @@ def gravity_checks(checker: Checker) -> None:
         crowded_identity,
         crowded_possession,
         offensive_team(crowded_possession, crowded_identity),
-        {0: identity_matrix},
+        flat,
     )
     checker.check("a frame with six defenders is dropped", six.empty, f"got {len(six)}")
 
@@ -523,6 +578,123 @@ def gravity_checks(checker: Checker) -> None:
         len(rolled) == 1
         and rolled.iloc[0]["frames_with_possession"] == 120
         and rolled.iloc[0]["frames_without_possession"] == 120,
+    )
+
+
+def camera_motion_checks(checker: Checker) -> None:
+    """Propagation, on an image moved by an amount we chose ourselves.
+
+    Every other test of a homography here has to trust an annotation. This one
+    does not: warp a synthetic frame by a known matrix, then check the
+    estimator recovers that matrix. If it cannot recover a shift it was handed,
+    nothing it says about a real camera is worth reading.
+    """
+    import cv2
+
+    from pipeline.camera_motion import (
+        MIN_INLIERS,
+        detect_overlay,
+        estimate_motion,
+        describe,
+    )
+    from pipeline.gravity import Homographies
+
+    rng = np.random.default_rng(7)
+    # Texture the estimator can actually latch onto: a flat or repeating
+    # image has no unique features, and would fail for reasons that say
+    # nothing about the code.
+    scene = rng.integers(0, 255, (540, 960, 3), dtype=np.uint8)
+    scene = cv2.GaussianBlur(scene, (7, 7), 0)
+
+    truth = np.array([[1.0, 0.0, -24.0], [0.0, 1.0, 11.0], [0.0, 0.0, 1.0]])
+    moved = cv2.warpPerspective(scene, np.linalg.inv(truth), (960, 540))
+
+    points, descriptors = describe(scene, None, 1.0)
+    motion = estimate_motion(moved, points, descriptors, None, 42, 1.0)
+    checker.check(
+        "a known shift is recovered from the image",
+        motion.usable,
+        f"{motion.inliers} inliers",
+    )
+    if motion.usable:
+        centre = np.array([480.0, 270.0, 1.0])
+        recovered = motion.matrix @ centre
+        expected = truth @ centre
+        error = float(
+            np.linalg.norm(recovered[:2] / recovered[2] - expected[:2] / expected[2])
+        )
+        checker.check(
+            "the recovered shift is within a pixel of the real one",
+            error < 1.0,
+            f"off by {error:.2f}px",
+        )
+        checker.check(
+            "the frame it came from is carried through",
+            motion.frame_idx == 42,
+        )
+
+    # An unrelated image must not produce a confident answer. This is the
+    # property that keeps a baseline closeup from being calibrated as if it
+    # were the wide camera.
+    stranger = cv2.GaussianBlur(
+        rng.integers(0, 255, (540, 960, 3), dtype=np.uint8), (7, 7), 0
+    )
+    unrelated = estimate_motion(stranger, points, descriptors, None, 43, 1.0)
+    checker.check(
+        "an unrelated frame is refused rather than fitted",
+        not unrelated.usable,
+        f"{unrelated.inliers} inliers (limit {MIN_INLIERS})",
+    )
+
+    # Masking has to actually remove features, or the overlay stays in play.
+    mask = np.zeros((540, 960), np.uint8)
+    mask[:, :480] = 255
+    masked_points, _ = describe(scene, mask, 1.0)
+    checker.check(
+        "a mask keeps features out of the region it covers",
+        len(masked_points) and masked_points[:, 0].min() >= 480 - 1,
+        f"{len(masked_points)} feature(s), leftmost x "
+        f"{masked_points[:, 0].min():.0f}" if len(masked_points) else "none",
+    )
+
+    class OneFrameCapture:
+        """A clip that never cuts, which is where overlay detection breaks."""
+
+        def set(self, *_args):
+            return True
+
+        def read(self):
+            return True, scene.copy()
+
+    overlay, regions = detect_overlay(OneFrameCapture(), [1, 2, 3], scene, 1.0)
+    checker.check(
+        "overlay detection refuses a clip with no camera cuts",
+        not regions and not overlay.any(),
+        f"{len(regions)} region(s) found",
+    )
+
+    per_frame = np.array([[2.0, 0, 0], [0, 2.0, 0], [0, 0, 1.0]])
+    per_shot = np.eye(3)
+    propagated = Homographies(per_frame={7: per_frame}, per_shot={0: per_shot})
+    checker.check(
+        "a propagated frame uses its own matrix",
+        np.array_equal(propagated.for_frame(0, 7), per_frame),
+    )
+    # The two matrices are accurate to 0.03ft and 1.49ft respectively, so
+    # quietly substituting one for the other would mix accuracy regimes in
+    # one table with no column to tell them apart.
+    checker.check(
+        "a refused frame is left unmeasured, not filled in from the shot",
+        propagated.for_frame(0, 8) is None,
+    )
+    plain = Homographies(per_frame={}, per_shot={0: per_shot})
+    checker.check(
+        "a game that was never propagated still uses its shot matrices",
+        np.array_equal(plain.for_frame(0, 8), per_shot),
+    )
+    checker.check(
+        "a frame with neither is left unprojected",
+        plain.for_frame(3, 8) is None,
     )
 
 
@@ -859,6 +1031,9 @@ def main() -> int:
 
         print("\nChecking stage 6 gravity arithmetic")
         gravity_checks(checker)
+
+        print("\nChecking stage 5 camera-motion propagation")
+        camera_motion_checks(checker)
 
     print(f"\nChecking structural invariants for {args.game_id}")
     structural_checks(checker, args.game_id)

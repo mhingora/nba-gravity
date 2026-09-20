@@ -184,6 +184,16 @@ validated independently.
   shots sharing that angle tag, and only recompute if reprojection error
   looks off for a specific shot (e.g. the broadcast zoomed slightly).
 
+> **What this misses, measured.** Reusing one homography across shots is not
+> the problem — reusing it across *frames* is. The broadcast camera pans
+> within a single shot, so the annotated matrix is out by 1.49 ft at the
+> median across the shot it was fitted on, and `reprojection_error_px` cannot
+> see that: it is the residual on the annotated frame, and every shot's file
+> carries the same value. `--propagate` matches each frame back to the
+> annotated frame and composes the camera motion with the annotated
+> homography, which reduces that to 0.03 ft and reaches other shots from the
+> same camera without annotating them. See `09-implementation-notes.md`.
+
 ## Stage 6 — Aggregation (`06_aggregate.py`)
 
 **Input:** tracks, identity, possession, calibration — all joined by

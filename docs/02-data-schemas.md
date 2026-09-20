@@ -222,6 +222,54 @@ records which frame and shot that was, and it is the only field that
 distinguishes a fitted shot from a copied one. Stage 6 aggregates the
 annotated shot by default for exactly this reason.
 
+## `outputs/calibration/{game_id}_homographies.parquet`
+
+One homography **per frame**, written by `05_calibrate.py --propagate`. A
+single matrix per shot assumes the camera holds still, and it does not: the
+annotated matrix is out by 1.49 ft at the median across its own shot, against
+0.03 ft for the propagated one (measured by template-matching the annotated
+landmarks, which knows nothing about either homography).
+
+| column        | type  | notes                                            |
+|---------------|-------|----------------------------------------------------|
+| game_id       | str   |                                                      |
+| shot_id       | int   |                                                      |
+| frame_idx     | int   |                                                      |
+| h00 … h22     | float | the 3x3 matrix, row-major; image pixels -> court feet |
+| inliers       | int   | matched features that agreed on the camera motion     |
+| matches       | int   | candidate matches before RANSAC                       |
+| motion_rms_px | float | how well those inliers fit the estimated motion       |
+
+**Frames are missing from this table by design.** A frame whose view cannot be
+matched back to the annotated frame — a different camera, a replay, heavy
+blur — gets no row, and Stage 6 leaves it unmeasured rather than projecting it
+through a matrix that does not describe it. On the test clip 95% of the
+annotated shot solves, and 7 of the other 31 shots solve because they are the
+same camera; the remaining 24 are correctly absent.
+
+## `outputs/calibration/{game_id}_homographies.json`
+
+What produced the table beside it.
+
+```json
+{
+  "game_id": "S_N3_HD",
+  "reference_frame": 3329,
+  "court_profile": "msg_main_ebard",
+  "settings": {"scale": 0.5, "min_inliers": 40, "ransac_px": 3.0},
+  "overlay_regions": [{"x": 0.228, "y": 0.865, "w": 0.131, "h": 0.135, "coverage": 0.0127}],
+  "frames_attempted": 464,
+  "frames_solved": 443,
+  "shots_reached": [11]
+}
+```
+
+`overlay_regions` are the broadcast graphics, found automatically rather than
+configured: they are the only things that match across a camera cut without
+moving. Masking them is not an optimisation — unmasked, every shot in a clip
+matches every other one on the scorebug alone, and propagation would hand
+Stage 6 a confident homography for a baseline closeup.
+
 ## `outputs/possession/{game_id}.parquet`
 
 | column      | type | notes                                       |

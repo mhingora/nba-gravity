@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 from pipeline.common import (
+    CLASS_PLAYER,
     METRICS_DIR,
     distances_path,
     identity_path,
@@ -40,10 +41,12 @@ from pipeline.gravity import (
     EXPECTED_DEFENDERS,
     MIN_BUCKET_FRAMES,
     MIN_OFFENSE_SHARE,
+    Homographies,
     aggregate_players,
     combine_games,
     defender_distances,
     load_calibration,
+    load_propagated,
     offensive_team,
 )
 
@@ -54,14 +57,14 @@ def usable_shots(
     max_reprojection_px: float,
     all_shots: bool,
 ) -> tuple[dict, list[str]]:
-    """Homographies for the shots worth projecting, plus why the rest are out.
+    """Shot-level homographies worth projecting, plus why the rest are out.
 
-    Stage 5 writes one matrix per shot, but every shot of a game gets the
-    *same* matrix and the same reprojection error, because the error is the
-    residual on the frame the landmarks were annotated on. So the error alone
-    cannot say whether a given shot's camera matches — only the annotation
-    record can, and by default a shot is aggregated when the landmarks came
-    from it.
+    This is the fallback for footage that has not been propagated. Stage 5
+    writes one matrix per shot, but every shot of a game gets the *same*
+    matrix and the same reprojection error, because the error is the residual
+    on the frame the landmarks were annotated on. So the error alone cannot
+    say whether a given shot's camera matches — only the annotation record
+    can, and by default a shot is aggregated when the landmarks came from it.
     """
     matrices: dict[int, np.ndarray] = {}
     skipped: list[str] = []
@@ -120,22 +123,35 @@ def aggregate_game(
     identity = pd.read_parquet(identity_path(game_id))
     possession = pd.read_parquet(possession_path(game_id))
 
-    matrices, notes = usable_shots(
+    per_frame = load_propagated(game_id)
+    per_shot, notes = usable_shots(
         game_id, tracks["shot_id"].unique(), max_reprojection_px, all_shots
     )
+    if per_frame:
+        # Propagation supersedes the per-shot rules: it followed the camera
+        # frame by frame, and a frame it could not solve is one it refused,
+        # which is a better answer than a shot-wide guess.
+        tracked = tracks[tracks["class"] == CLASS_PLAYER]["frame_idx"]
+        solved = set(per_frame)
+        covered = tracked.isin(solved).mean() if len(tracked) else 0.0
+        notes = [
+            f"{len(per_frame)} propagated frame(s) cover {covered:.0%} of "
+            "tracked frames; per-shot fallback used for the rest"
+        ]
+    homographies = Homographies(per_frame=per_frame, per_shot=per_shot)
 
     offense = offensive_team(possession, identity, min_offense_share)
     for call in offense.values():
         if call.team_id is None:
             notes.append(f"shot {call.shot_id}: {call.reason}")
-        elif call.shot_id in matrices:
+        elif homographies.covers(call.shot_id):
             notes.append(
                 f"shot {call.shot_id}: {call.team_id} on offence "
                 f"({call.share:.0%} of {call.handler_frames} handler frames)"
             )
 
     distances = defender_distances(
-        tracks, identity, possession, offense, matrices, defenders_required
+        tracks, identity, possession, offense, homographies, defenders_required
     )
     metrics = aggregate_players(
         distances, identity, min_bucket_frames, min_identity_confidence
@@ -153,10 +169,25 @@ def aggregate_all(min_bucket_frames: int = MIN_BUCKET_FRAMES) -> pd.DataFrame:
     return combine_games(tables, min_bucket_frames)
 
 
-def report(distances: pd.DataFrame, metrics: pd.DataFrame, notes: list[str]) -> None:
-    """Say what was measured and what was thrown away, on stderr."""
-    for note in notes:
+def report(
+    distances: pd.DataFrame,
+    metrics: pd.DataFrame,
+    notes: list[str],
+    max_notes: int = 8,
+) -> None:
+    """Say what was measured and what was thrown away, on stderr.
+
+    A whole clip is thirty-odd shots, and thirty lines of "shot N: dark on
+    offence" is noise that buries the numbers underneath it. Print enough to
+    see the pattern, then say how many more there were.
+    """
+    for note in notes[:max_notes]:
         print(f"[stage 6] {note}", file=sys.stderr)
+    if len(notes) > max_notes:
+        print(
+            f"[stage 6] ... and {len(notes) - max_notes} more shot note(s)",
+            file=sys.stderr,
+        )
 
     if distances.empty:
         print(
@@ -254,7 +285,9 @@ def main() -> int:
         action="store_true",
         help="Aggregate every shot, not just the one its landmarks were "
         "annotated on. Every shot of a game carries the same homography, so "
-        "this trusts it beyond where it was checked.",
+        "this trusts it beyond where it was checked. Ignored once "
+        "`05_calibrate.py --propagate` has run, which decides coverage by "
+        "what it could actually match.",
     )
     args = parser.parse_args()
 
